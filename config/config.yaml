@@ -1,0 +1,12 @@
+defaults:
+  - agent/dqn_agent
+
+env: CartPole-v1
+seed: 42
+
+training:
+  epochs: 5000
+  batch_size: 128
+  
+validation:
+  rollout_num: 5

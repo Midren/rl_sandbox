@@ -1,0 +1,16 @@
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = 'rl_sandbox'
+version = "0.1.0"
+description = 'Sandbox for my RL experiments'
+authors = ['Roman Milishchuk <milishchuk.roman@gmail.com>']
+packages = [{include = 'rl_sandbox'}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+numpy = '*'
+nptyping = '*'
+gym = "^0.26.1"

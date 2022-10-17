@@ -1,0 +1,47 @@
+{
+  "configurations": {
+    "python-base": {
+      "adapter": "debugpy",
+      "variables": {
+      },
+      "configuration": {
+        "type": "python",
+        "request": "launch",
+        "cwd": "${workspaceRoot}",
+        "stopOnEntry": false,
+        "console": "externalTerminal",
+        "debugOptions": [],
+        "python": "python3"
+      },
+      "breakpoints": {
+        "exception": {
+          "caught": "N",
+          "raised": "N",
+          "uncaught": "Y",
+          "userUnhandled": ""
+        }
+      }
+    },
+    "Debug: Current File": {
+      "extends": "python-base",
+      "configuration": {
+        "program": "${file}",
+        "args": []
+      }
+    },
+    "Pytest current": {
+      "extends": "python-base",
+      "configuration": {
+        "module": "pytest",
+        "args": ["${file}"]
+      }
+    },
+    "Run main": {
+      "extends": "python-base",
+      "configuration": {
+        "program": "main.py",
+        "args": []
+      }
+    }
+  }
+}
