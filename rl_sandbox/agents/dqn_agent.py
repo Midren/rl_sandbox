@@ -4,7 +4,7 @@ import torch
 from rl_sandbox.agents.rl_agent import RlAgent
 from rl_sandbox.utils.fc_nn import fc_nn_generator
 from rl_sandbox.utils.replay_buffer import (Action, Actions, Rewards, State,
-                                            States, TerminationFlag)
+                                            States, TerminationFlags)
 
 
 class DqnAgent(RlAgent):
@@ -24,7 +24,7 @@ class DqnAgent(RlAgent):
     def get_action(self, obs: State) -> Action:
         return np.array(torch.argmax(self.value_func(torch.from_numpy(obs)), dim=1))
 
-    def train(self, s: States, a: Actions, r: Rewards, next: States, is_finished: TerminationFlag):
+    def train(self, s: States, a: Actions, r: Rewards, next: States, is_finished: TerminationFlags):
         # Bellman error: MSE( (r + gamma * max_a Q(S_t+1, a)) -  Q(s_t, a) )
         # check for is finished
 

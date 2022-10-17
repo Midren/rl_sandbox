@@ -5,8 +5,10 @@ env: CartPole-v1
 seed: 42
 
 training:
-  epochs: 5000
+  epochs: 100
+  steps_per_epoch: 1000
   batch_size: 128
   
 validation:
   rollout_num: 5
+  visualize: true

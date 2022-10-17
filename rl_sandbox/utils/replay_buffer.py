@@ -1,20 +1,31 @@
 import random
 import typing as t
 from collections import deque
+from dataclasses import dataclass
 
 import numpy as np
 from nptyping import Bool, Int, Float, NDArray, Shape
 
+Observation = NDArray[Shape["*,*,3"],Int]
 State = NDArray[Shape["*"],Float]
 Action = NDArray[Shape["*"],Int]
 
+Observations = NDArray[Shape["*,*,*,3"],Int]
 States = NDArray[Shape["*,*"],Float]
 Actions = NDArray[Shape["*,*"],Int]
 Rewards = NDArray[Shape["*"],Float]
-TerminationFlag = NDArray[Shape["*"],Bool]
+TerminationFlags = NDArray[Shape["*"],Bool]
+
+@dataclass
+class Rollout:
+    states: States
+    actions: Actions
+    rewards: Rewards
+    next_states: States
+    is_finished: TerminationFlags
+    observations: t.Optional[Observations] = None
 
 
-# ReplayBuffer consists of next triplets: (s, a, r)
 class ReplayBuffer:
     def __init__(self, max_len=10_000):
         self.max_len = max_len
@@ -23,24 +34,24 @@ class ReplayBuffer:
         self.rewards: Rewards = np.array([])
         self.next_states: States = np.array([])
 
-    def add_rollout(self, s: States, a: Actions, r: Rewards, n: States, f: TerminationFlag):
+    def add_rollout(self, rollout: Rollout):
         if len(self.states) == 0:
-            self.states = s
-            self.actions = a
-            self.rewards = r
-            self.next_states = n
-            self.is_finished = f
+            self.states = rollout.states
+            self.actions = rollout.actions
+            self.rewards = rollout.rewards
+            self.next_states = rollout.next_states
+            self.is_finished = rollout.is_finished
         else:
-            self.states = np.concatenate([self.states, s])
-            self.actions = np.concatenate([self.actions, a])
-            self.rewards = np.concatenate([self.rewards, r])
-            self.next_states = np.concatenate([self.next_states, n])
-            self.is_finished = np.concatenate([self.is_finished, f])
+            self.states = np.concatenate([self.states, rollout.states])
+            self.actions = np.concatenate([self.actions, rollout.actions])
+            self.rewards = np.concatenate([self.rewards, rollout.rewards])
+            self.next_states = np.concatenate([self.next_states, rollout.next_states])
+            self.is_finished = np.concatenate([self.is_finished, rollout.is_finished])
 
     def can_sample(self, num: int):
         return len(self.states) >= num
 
-    def sample(self, num: int) -> t.Tuple[States, Actions, Rewards, States, TerminationFlag]:
+    def sample(self, num: int) -> t.Tuple[States, Actions, Rewards, States, TerminationFlags]:
         indeces = list(range(len(self.states)))
         random.shuffle(indeces)
         indeces = indeces[:num]
