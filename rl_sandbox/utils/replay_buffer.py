@@ -27,7 +27,7 @@ class Rollout:
 
 
 class ReplayBuffer:
-    def __init__(self, max_len=10_000):
+    def __init__(self, max_len=2_000):
         self.max_len = max_len
         self.states: States = np.array([])
         self.actions: Actions = np.array([])
@@ -47,6 +47,17 @@ class ReplayBuffer:
             self.rewards = np.concatenate([self.rewards, rollout.rewards])
             self.next_states = np.concatenate([self.next_states, rollout.next_states])
             self.is_finished = np.concatenate([self.is_finished, rollout.is_finished])
+
+        if len(self.states) >= self.max_len:
+            self.states = self.states
+            self.actions = self.actions
+            self.rewards = self.rewards
+            self.next_states = self.next_states
+            self.is_finished = self.is_finished
+
+    def add_sample(self, s: State, a: Action, r: float, n: State, f: bool):
+        rollout = Rollout(np.array([s]), np.expand_dims(np.array([a]), 0), np.array([r], dtype=np.float32), np.array([n]), np.array([f]))
+        self.add_rollout(rollout)
 
     def can_sample(self, num: int):
         return len(self.states) >= num

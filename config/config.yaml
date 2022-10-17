@@ -3,10 +3,10 @@ defaults:
 
 env: CartPole-v1
 seed: 42
+device_type: cpu
 
 training:
-  epochs: 100
-  steps_per_epoch: 1000
+  epochs: 5000
   batch_size: 128
   
 validation:

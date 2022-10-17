@@ -12,11 +12,11 @@ def collect_rollout(env: gym.Env, agent: t.Optional[t.Any] = None, save_obs: boo
     terminated = False
 
     while not terminated:
+        # TODO: use gym.ActionWrapper instead
         if agent is None:
             action = env.action_space.sample()
         else:
-            # FIXME: move reshaping inside DqnAgent
-            action = agent.get_action(state.reshape(1, -1))[0]
+            action = agent.get_action(state)
         new_state, reward, terminated, _, _ = env.step(action)
         s.append(state)
         a.append(action)
@@ -29,6 +29,7 @@ def collect_rollout(env: gym.Env, agent: t.Optional[t.Any] = None, save_obs: boo
     return Rollout(np.array(s), np.array(a).reshape(len(s), -1), np.array(r, dtype=np.float32), np.array(n), np.array(f), obs)
 
 def collect_rollout_num(env: gym.Env, num: int, agent: t.Optional[t.Any] = None, save_obs: bool = False) -> t.List[Rollout]:
+    # TODO: paralelyze
     rollouts = []
     for _ in range(num):
         rollouts.append(collect_rollout(env, agent, save_obs))
@@ -36,5 +37,6 @@ def collect_rollout_num(env: gym.Env, num: int, agent: t.Optional[t.Any] = None,
 
 
 def fillup_replay_buffer(env: gym.Env, rep_buffer: ReplayBuffer, num: int):
+    # TODO: paralelyze
     while not rep_buffer.can_sample(num):
         rep_buffer.add_rollout(collect_rollout(env))
