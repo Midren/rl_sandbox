@@ -1,14 +1,21 @@
 defaults:
   - agent/dqn_agent
+  - _self_
 
-env: CartPole-v1
+env:
+  type: dm_control
+  domain_name: cartpole
+  task_name: swingup
+  # type: gym
+  # name: CartPole-v1
+
 seed: 42
-device_type: cpu
+device_type: mps
 
 training:
   epochs: 5000
   batch_size: 128
-  
+
 validation:
   rollout_num: 5
   visualize: true

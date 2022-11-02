@@ -16,3 +16,7 @@ nptyping = '*'
 gym = "^0.26.1"
 pygame = '*'
 moviepy = '*'
+torchvision = '^0.13'
+torch = '^1.12'
+tensorboard = '^2.0'
+dm-control = '^1.0.0'

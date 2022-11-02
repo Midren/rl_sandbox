@@ -1,10 +1,9 @@
-import random
 import typing as t
 from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
-from nptyping import Bool, Int, Float, NDArray, Shape
+from nptyping import Bool, Float, Int, NDArray, Shape
 
 Observation = NDArray[Shape["*,*,3"],Int]
 State = NDArray[Shape["*"],Float]
@@ -63,7 +62,5 @@ class ReplayBuffer:
         return len(self.states) >= num
 
     def sample(self, num: int) -> t.Tuple[States, Actions, Rewards, States, TerminationFlags]:
-        indeces = list(range(len(self.states)))
-        random.shuffle(indeces)
-        indeces = indeces[:num]
+        indeces = np.random.choice(len(self.states), num)
         return self.states[indeces], self.actions[indeces], self.rewards[indeces], self.next_states[indeces], self.is_finished[indeces]

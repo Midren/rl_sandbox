@@ -1,4 +1,4 @@
 name: dqn
 hidden_layer_size: 16
 num_layers: 1
-discount_factor: 0.98
+discount_factor: 0.999
