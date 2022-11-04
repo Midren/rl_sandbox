@@ -9,28 +9,22 @@ from torch import nn
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
+from rl_sandbox.vision.vae import ResBlock
 
-class ResBlock(nn.Module):
 
-    def __init__(self, in_channels, hidden_units=256):
+class VQ_VAE(nn.Module):
+
+    def __init__(self, latent_space_size, latent_dim, beta=0.25):
         super().__init__()
-
-        self.block = nn.Sequential(
-            nn.ReLU(), nn.Conv2d(in_channels, hidden_units, kernel_size=3,
-                                 padding='same'), nn.ReLU(inplace=True),
-            nn.Conv2d(hidden_units, in_channels, kernel_size=1, padding='same'))
-
-    def forward(self, X):
-        output = self.block(X)
-        return X + output
-
-
-class VAE(nn.Module):
-
-    def __init__(self, latent_dim=3, kl_weight=2.5e-4):
-        super().__init__()
+        # amount of the discrete vectors
+        self.latent_space_size = latent_space_size
+        # dimensionality of each category
         self.latent_dim = latent_dim
-        self.kl_weight = kl_weight
+        self.beta = beta
+
+        self.latent_space = torch.nn.Parameter(
+            torch.empty(size=(self.latent_space_size, self.latent_dim)))
+        torch.nn.init.kaiming_uniform_(self.latent_space)
 
         in_channels = 3
         out_channels = 128
@@ -46,19 +40,11 @@ class VAE(nn.Module):
             nn.LeakyReLU(inplace=True),
             ResBlock(out_channels),
             ResBlock(out_channels),
-            nn.Conv2d(out_channels, 4, 1),  # 4x8x8
-            nn.Flatten())
-
-        self.f_mu = nn.Linear(256, self.latent_dim)
-        self.f_log_sigma = nn.Linear(256, self.latent_dim)
-
-        self.decoder_1 = nn.Sequential(
-            nn.Linear(self.latent_dim, 256),
-            nn.LeakyReLU(inplace=True),
+            nn.Conv2d(out_channels, latent_dim, 1),  # Dx8x8
         )
 
-        self.decoder_2 = nn.Sequential(
-            nn.Conv2d(4, out_channels, 1),
+        self.decoder = nn.Sequential(
+            nn.Conv2d(latent_dim, out_channels, 1),
             ResBlock(out_channels),
             ResBlock(out_channels),
             nn.BatchNorm2d(out_channels),
@@ -77,34 +63,41 @@ class VAE(nn.Module):
             nn.LeakyReLU(inplace=True),
         )
 
+    def quantize(self, z):
+        # z <- BxDxHxW
+        # Pytorch BUG: https://github.com/pytorch/pytorch/issues/84206
+        # .to(memory_format=torch.contiguous_format) should be used instead of .contigious() on mac m1
+        latents = torch.permute(z, (0, 2, 3, 1)).to(memory_format=torch.contiguous_format)  # BxHxWxD
+        flatten = latents.view(-1, self.latent_dim)  # BHWxD
+
+        # use the property that (a - b)^2 = a^2 - 2ab + b^2
+        l2_dist = torch.sum(flatten**2, dim=1, keepdim=True) - 2 * (
+            flatten @ self.latent_space.T) + torch.sum(self.latent_space**2, dim=1) # BHWxK
+
+        ks = torch.argmin(l2_dist, dim=1)
+
+        flatten_quantized_latents = torch.index_select(self.latent_space, 0, ks) # BHWxD
+        e = flatten_quantized_latents.view(latents.shape).permute((0, 3, 1, 2)).to(memory_format=torch.contiguous_format)
+        z.retain_grad()
+        e.grad = z.grad
+        return e
+
+
     def forward(self, X):
-        z_h = self.encoder(X)
+        z = self.encoder(X)
+        e = self.quantize(z)
+        x_h = self.decoder(e)
+        return x_h, z, e
 
-        z_mu = self.f_mu(z_h)
-        z_log_sigma = self.f_log_sigma(z_h)
-
-        device = next(self.f_mu.parameters()).device
-        z = z_mu + z_log_sigma.exp() * torch.rand_like(z_mu).to(device)
-
-        x_h_1 = self.decoder_1(z)
-        x_h = self.decoder_2(x_h_1.view(-1, 4, 8, 8))
-        return x_h, z_mu, z_log_sigma
-
-    def calculate_loss(self, x, x_h, z_mu, z_log_sigma) -> dict[str, torch.Tensor]:
-        # loss = log p(x | z) + KL(q(z) || p(z))
-        # p(z) = N(0, 1)
+    def calculate_loss(self, x, x_h, z, e) -> dict[str, torch.Tensor]:
+        # loss = log p(x | z) + || stop_grad(e) - z ||_2 + beta *|| e - stop_grad(z) ||_2
         L_rec = torch.nn.MSELoss()
 
-        loss_kl = -1 * torch.mean(torch.sum(
-            z_log_sigma + 0.5 * (1 - z_log_sigma.exp()**2 - z_mu**2), dim=1),
-                                  dim=0)
+        loss_reg = torch.norm(e.detach() - z,
+                              p=2) + self.beta * torch.norm(e - z.detach(), p=2)
         loss_rec = L_rec(x, x_h)
 
-        return {
-            'loss': loss_rec + self.kl_weight * loss_kl,
-            'loss_rec': loss_rec,
-            'loss_kl': loss_kl
-        }
+        return {'loss': loss_rec + loss_reg, 'loss_rec': loss_rec, 'loss_reg': loss_reg}
 
 
 def image_preprocessing(img: Image):
@@ -112,8 +105,6 @@ def image_preprocessing(img: Image):
 
 
 if __name__ == "__main__":
-    import torch.multiprocessing
-
     # fix for "unable to open shared memory on mac"
     torch.multiprocessing.set_sharing_strategy('file_system')
 
@@ -139,7 +130,7 @@ if __name__ == "__main__":
     logger = SummaryWriter(log_dir=f"vae_tmp/{current_time}_{socket.gethostname()}")
 
     device = 'mps'
-    model = VAE(latent_dim=256).to(device)
+    model = VQ_VAE(latent_space_size=256, latent_dim=1).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=2e-4)
 
     for epoch in tqdm(range(100)):
@@ -147,10 +138,9 @@ if __name__ == "__main__":
         logger.add_scalar('epoch', epoch, epoch)
 
         for sample_num, (img, target) in enumerate(train_data_loader):
-            recovered_img, z_mu, z_log_sigma = model(img.to(device))
+            recovered_img, z, e = model(img.to(device))
 
-            losses = model.calculate_loss(img.to(device), recovered_img, z_mu,
-                                          z_log_sigma)
+            losses = model.calculate_loss(img.to(device), recovered_img, z, e)
             loss = losses['loss']
 
             optimizer.zero_grad()
