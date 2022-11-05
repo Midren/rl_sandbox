@@ -18,7 +18,8 @@ class DqnAgent(RlAgent):
         self.value_func = fc_nn_generator(obs_space_num,
                                           actions_num,
                                           hidden_layer_size,
-                                          num_layers).to(device_type)
+                                          num_layers,
+                                          torch.nn.ReLU).to(device_type)
         self.optimizer = torch.optim.Adam(self.value_func.parameters(), lr=1e-3)
         self.loss = torch.nn.MSELoss()
         self.device_type = device_type

@@ -2,14 +2,14 @@ import typing as t
 
 import gym
 import numpy as np
-from dm_control.composer.environment import Environment as dmEnv
+from dm_env import Environment as dmEnv
 
 from rl_sandbox.agents.random_agent import RandomAgent
 from rl_sandbox.utils.dm_control import ActionDiscritizer, decode_dm_ts
 from rl_sandbox.utils.replay_buffer import ReplayBuffer, Rollout
 
 
-def collect_rollout(env: gym.Env | dmEnv, agent: t.Optional[t.Any] = None, save_obs: bool = False) -> Rollout:
+def collect_rollout(env: gym.Env | dmEnv, agent: t.Optional[t.Any] = None, obs_res: t.Optional[t.Tuple[int, int]] = None) -> Rollout:
     s, a, r, n, f, o = [], [], [], [], [], []
 
     match env:
@@ -20,6 +20,7 @@ def collect_rollout(env: gym.Env | dmEnv, agent: t.Optional[t.Any] = None, save_
 
     if agent is None:
         agent = RandomAgent(env)
+
 
     while not terminated:
         action = agent.get_action(state)
@@ -38,26 +39,26 @@ def collect_rollout(env: gym.Env | dmEnv, agent: t.Optional[t.Any] = None, save_
         n.append(new_state)
         f.append(terminated)
 
-        if save_obs and isinstance(env, dmEnv):
-            o.append(env.physics.render(128, 128, camera_id=0))
+        if obs_res is not None and isinstance(env, dmEnv):
+            o.append(env.physics.render(*obs_res, camera_id=0))
         state = new_state
 
     match env:
         case gym.Env():
-            obs = np.stack(list(env.render())) if save_obs else None
+            obs = np.stack(list(env.render())) if obs_res is not None else None
         case dmEnv():
-            obs = np.array(o) if save_obs else None
+            obs = np.array(o) if obs_res is not None else None
     return Rollout(np.array(s), np.array(a).reshape(len(s), -1), np.array(r, dtype=np.float32), np.array(n), np.array(f), obs)
 
-def collect_rollout_num(env: gym.Env, num: int, agent: t.Optional[t.Any] = None, save_obs: bool = False) -> t.List[Rollout]:
+def collect_rollout_num(env: gym.Env, num: int, agent: t.Optional[t.Any] = None, obs_res: bool = False) -> t.List[Rollout]:
     # TODO: paralelyze
     rollouts = []
     for _ in range(num):
-        rollouts.append(collect_rollout(env, agent, save_obs))
+        rollouts.append(collect_rollout(env, agent, obs_res))
     return rollouts
 
 
-def fillup_replay_buffer(env: gym.Env, rep_buffer: ReplayBuffer, num: int):
+def fillup_replay_buffer(env: gym.Env, rep_buffer: ReplayBuffer, num: int, obs_res: t.Optional[t.Tuple[int, int]] = None):
     # TODO: paralelyze
     while not rep_buffer.can_sample(num):
-        rep_buffer.add_rollout(collect_rollout(env))
+        rep_buffer.add_rollout(collect_rollout(env, obs_res=obs_res))

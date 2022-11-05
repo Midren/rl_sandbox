@@ -6,20 +6,18 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.tensorboard.writer import SummaryWriter
 from tqdm import tqdm
 
-from rl_sandbox.agents.dqn_agent import DqnAgent
 from rl_sandbox.agents.random_agent import RandomAgent
 from rl_sandbox.metrics import MetricsEvaluator
 from rl_sandbox.utils.dm_control import ActionDiscritizer, decode_dm_ts
 from rl_sandbox.utils.replay_buffer import ReplayBuffer
-from rl_sandbox.utils.rollout_generation import (collect_rollout,
-                                                 collect_rollout_num,
+from rl_sandbox.utils.rollout_generation import (collect_rollout_num,
                                                  fillup_replay_buffer)
 from rl_sandbox.utils.schedulers import LinearScheduler
 
 
 @hydra.main(version_base="1.2", config_path='config', config_name='config')
 def main(cfg: DictConfig):
-    print(OmegaConf.to_yaml(cfg))
+    # print(OmegaConf.to_yaml(cfg))
 
     match cfg.env.type:
         case "dm_control":
@@ -29,30 +27,31 @@ def main(cfg: DictConfig):
         case "gym":
             env = gym.make(cfg.env)
             visualized_env = gym.make(cfg.env, render_mode='rgb_array_list')
+            if cfg.env.run_on_pixels:
+                raise NotImplementedError("Run on pixels supported only for 'dm_control'")
         case _:
             raise RuntimeError("Invalid environment type")
 
     buff = ReplayBuffer()
-    fillup_replay_buffer(env, buff, cfg.training.batch_size)
+    obs_res = cfg.env.obs_res if cfg.env.run_on_pixels else None
+    fillup_replay_buffer(env, buff, cfg.training.batch_size, obs_res=obs_res)
 
-    agent_params = {**cfg.agent}
-    agent_name = agent_params.pop('name')
     action_disritizer = ActionDiscritizer(env.action_spec(), values_per_dim=10)
     metrics_evaluator = MetricsEvaluator()
 
     match cfg.env.type:
         case "dm_control":
             obs_space_num = sum([v.shape[0] for v in env.observation_spec().values()])
+            if cfg.env.run_on_pixels:
+                obs_space_num = (*cfg.env.obs_res, 3)
         case "gym":
             obs_space_num = env.observation_space.shape[0]
 
     exploration_agent = RandomAgent(env)
-    agent = DqnAgent(obs_space_num=obs_space_num,
-                     actions_num=action_disritizer.shape,
-                     # actions_num=env.action_space.n,
-                     device_type=cfg.device_type,
-                     **agent_params,
-                     )
+    agent = hydra.utils.instantiate(cfg.agent,
+                            obs_space_num=obs_space_num,
+                            actions_num=action_disritizer.shape,
+                            device_type=cfg.device_type)
 
     writer = SummaryWriter()
 
@@ -65,6 +64,7 @@ def main(cfg: DictConfig):
         match cfg.env.type:
             case "dm_control":
                 state, _, _ = decode_dm_ts(env.reset())
+                obs = env.physics.render(*cfg.env.obs_res, camera_id=0) if cfg.env.run_on_pixels else None
             case "gym":
                 state, _ = env.reset()
 
@@ -79,14 +79,18 @@ def main(cfg: DictConfig):
             match cfg.env.type:
                 case "dm_control":
                     new_state, reward, terminated = decode_dm_ts(env.step(action_disritizer.undiscretize(action)))
+                    # FIXME: if run_on_pixels next_state should also be observation
+                    obs = env.physics.render(*cfg.env.obs_res, camera_id=0) if cfg.env.run_on_pixels else None
                 case "gym":
                     new_state, reward, terminated, _, _ = env.step(action)
                     action = action_disritizer.undiscretize(action)
+                    obs = None
 
-            buff.add_sample(state, action, reward, new_state, terminated)
+            buff.add_sample(state, action, reward, new_state, terminated, obs)
 
-            s, a, r, n, f = buff.sample(cfg.training.batch_size)
-            a = np.stack([action_disritizer.discretize(a_) for a_ in a]).reshape(-1, 1)
+            s, a, r, n, f = buff.sample(cfg.training.batch_size,
+                                        return_observation=cfg.env.run_on_pixels,
+                                        cluster_size=cfg.agent.get('batch_cluster_size', 1))
 
             loss = agent.train(s, a, r, n, f)
             writer.add_scalar('train/loss', loss, global_step)
@@ -100,7 +104,7 @@ def main(cfg: DictConfig):
                 writer.add_scalar(f'val/{metric_name}', metric, epoch_num)
 
             if cfg.validation.visualize:
-                rollouts = collect_rollout_num(visualized_env, 1, agent, save_obs=True)
+                rollouts = collect_rollout_num(visualized_env, 1, agent, obs_res=cfg.obs_res)
 
                 for rollout in rollouts:
                     video = np.expand_dims(rollout.observations.transpose(0, 3, 1, 2), 0)

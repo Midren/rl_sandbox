@@ -1,0 +1,7 @@
+_target_: rl_sandbox.agents.DreamerV2
+discount_factor: 0.995
+batch_cluster_size: 8
+latent_dim: 32
+latent_classes: 32
+rssm_dim: 600
+kl_loss_scale: 0.1

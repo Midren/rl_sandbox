@@ -3,11 +3,13 @@ defaults:
   - _self_
 
 env:
+  # type: gym
+  # name: CartPole-v1
   type: dm_control
   domain_name: cartpole
   task_name: swingup
-  # type: gym
-  # name: CartPole-v1
+  run_on_pixels: true
+  obs_res: [128, 128]
 
 seed: 42
 device_type: mps
