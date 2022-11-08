@@ -3,6 +3,7 @@ import hydra
 import numpy as np
 from dm_control import suite
 from omegaconf import DictConfig, OmegaConf
+import numpy as np
 from torch.utils.tensorboard.writer import SummaryWriter
 from tqdm import tqdm
 
@@ -48,9 +49,10 @@ def main(cfg: DictConfig):
             obs_space_num = env.observation_space.shape[0]
 
     exploration_agent = RandomAgent(env)
+    # FIXME: currently action is 1 value, but not one-hot encoding
     agent = hydra.utils.instantiate(cfg.agent,
                             obs_space_num=obs_space_num,
-                            actions_num=action_disritizer.shape,
+                            actions_num=(1),
                             device_type=cfg.device_type)
 
     writer = SummaryWriter()
@@ -88,12 +90,20 @@ def main(cfg: DictConfig):
 
             buff.add_sample(state, action, reward, new_state, terminated, obs)
 
+            # FIXME: unintuitive that batch_size is now number of total
+            #        samples, but not amount of sequences for recurrent model
             s, a, r, n, f = buff.sample(cfg.training.batch_size,
                                         return_observation=cfg.env.run_on_pixels,
                                         cluster_size=cfg.agent.get('batch_cluster_size', 1))
 
-            loss = agent.train(s, a, r, n, f)
-            writer.add_scalar('train/loss', loss, global_step)
+            losses = agent.train(s, a, r, n, f)
+            if isinstance(losses, np.ndarray):
+                writer.add_scalar('train/loss', loss, global_step)
+            elif isinstance(losses, dict):
+                for loss_name, loss in losses.items():
+                    writer.add_scalar(f'train/{loss_name}', loss, global_step)
+            else:
+                raise RuntimeError("AAAA, very bad")
             global_step += 1
 
         ### Validation

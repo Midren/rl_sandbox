@@ -1,5 +1,5 @@
 defaults:
-  - agent/dqn_agent
+  - agent/dreamer_v2
   - _self_
 
 env:
@@ -9,10 +9,10 @@ env:
   domain_name: cartpole
   task_name: swingup
   run_on_pixels: true
-  obs_res: [128, 128]
+  obs_res: [64, 64]
 
 seed: 42
-device_type: mps
+device_type: cpu
 
 training:
   epochs: 5000
