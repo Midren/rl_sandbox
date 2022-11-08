@@ -80,6 +80,7 @@ class ReplayBuffer:
         cluster_size: int = 1
     ) -> t.Tuple[States, Actions, Rewards, States, TerminationFlags]:
         # TODO: add warning if batch_size % cluster_size != 0
+        # FIXME: currently doesn't take into account discontinuations between between rollouts
         indeces = np.random.choice(len(self.states) - (cluster_size - 1), batch_size//cluster_size)
         indeces = np.stack([indeces + i for i in range(cluster_size)]).flatten(order='F')
         o = self.states[indeces] if not return_observation else self.observations[indeces]

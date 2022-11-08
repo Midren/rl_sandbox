@@ -78,9 +78,7 @@ class VQ_VAE(nn.Module):
 
         flatten_quantized_latents = torch.index_select(self.latent_space, 0, ks) # BHWxD
         e = flatten_quantized_latents.view(latents.shape).permute((0, 3, 1, 2)).to(memory_format=torch.contiguous_format)
-        z.retain_grad()
-        e.grad = z.grad
-        return e
+        return e + (z - z.detach())
 
 
     def forward(self, X):
