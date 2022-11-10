@@ -10,6 +10,7 @@ env:
   task_name: swingup
   run_on_pixels: true
   obs_res: [64, 64]
+  action_discrete_num: 10
 
 seed: 42
 device_type: cpu

@@ -10,3 +10,8 @@ class RlAgent(metaclass=ABCMeta):
     @abstractmethod
     def train(self, s: States, a: Actions, r: Rewards, next: States):
         pass
+
+    # Some models can have internal state which should be
+    # properly reseted between rollouts
+    def reset(self):
+        pass

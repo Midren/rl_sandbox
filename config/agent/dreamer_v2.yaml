@@ -7,6 +7,14 @@ rssm_dim: 200
 kl_loss_scale: 0.1
 
 # ActorCritic parameters
-imagination_horizon: 15
 discount_factor: 0.995
-#critic_update_interval: 100
+imagination_horizon: 15
+# Lambda parameter for trainin deeper multi-step prediction
+critic_value_target_lambda: 0.95
+critic_update_interval: 100
+# [0-1], 1 means hard update
+critic_soft_update_fraction: 1
+# mixing of reinforce and maximizing value func
+# for dm_control it is zero in Dreamer (Atari 1)
+actor_reinforce_fraction: 0
+actor_entropy_scale: 1e-4
