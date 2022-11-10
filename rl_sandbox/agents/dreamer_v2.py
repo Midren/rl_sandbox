@@ -1,4 +1,5 @@
 import itertools
+import typing as t
 from collections import defaultdict
 
 import numpy as np
@@ -9,8 +10,7 @@ from torch.nn import functional as F
 from rl_sandbox.agents.rl_agent import RlAgent
 from rl_sandbox.utils.fc_nn import fc_nn_generator
 from rl_sandbox.utils.replay_buffer import (Action, Actions, Observations,
-                                            Rewards, State, States,
-                                            TerminationFlags)
+                                            Rewards, State, TerminationFlags)
 
 
 class View(nn.Module):
@@ -73,10 +73,12 @@ class RSSM(nn.Module):
         self.latent_dim = latent_dim
         self.categories_num = categories_num
         self.ensemble_num = 5
+        self.hidden_size = hidden_size
 
         # Calculate deterministic state from prev stochastic, prev action and prev deterministic
         self.pre_determ_recurrent = nn.Sequential(
-            nn.Linear(latent_dim * categories_num + actions_num, hidden_size),  # Dreamer 'img_in'
+            nn.Linear(latent_dim * categories_num + actions_num,
+                      hidden_size),  # Dreamer 'img_in'
             nn.LayerNorm(hidden_size),
         )
         self.determ_recurrent = nn.GRU(input_size=hidden_size,
@@ -119,6 +121,20 @@ class RSSM(nn.Module):
         return torch.distributions.one_hot_categorical.OneHotCategoricalStraightThrough(
             logits=logits_per_model[index])
 
+    def predict_next(self,
+                     stoch_latent,
+                     action,
+                     deter_state: t.Optional[torch.Tensor] = None):
+        if deter_state is None:
+            deter_state = torch.zeros(*stoch_latent.shape[:2], self.hidden_size).to(
+                next(self.stoch_net.parameters()).device)
+        x = self.pre_determ_recurrent(torch.concat([stoch_latent, action], dim=2))
+        _, determ = self.determ_recurrent(x, deter_state)
+
+        # used for KL divergence
+        predicted_stoch_latent = self.estimate_stochastic_latent(determ)
+        return deter_state, predicted_stoch_latent
+
     def forward(self, h_prev: tuple[torch.Tensor, torch.Tensor], embed, action):
         """
             'h' <- internal state of the world
@@ -129,11 +145,9 @@ class RSSM(nn.Module):
 
         # Use zero vector for prev_state of first
         deter_prev, stoch_prev = h_prev
-        x = self.pre_determ_recurrent(torch.concat([stoch_prev, action], dim=2))
-        _, determ = self.determ_recurrent(x, deter_prev)
-
-        # used for KL divergence
-        prior_stoch_dist = self.estimate_stochastic_latent(determ)
+        determ, prior_stoch_dist = self.predict_next(stoch_prev,
+                                                     action,
+                                                     deter_state=deter_prev)
 
         posterior_stoch_logits = self.stoch_net(torch.concat([determ, embed],
                                                              dim=2))  # Dreamer 'obs_out'
@@ -143,9 +157,6 @@ class RSSM(nn.Module):
         return [determ, prior_stoch_dist, posterior_stoch_dist]
 
 
-# NOTE: In Dreamer ELU is used everywhere as activation func
-# NOTE: In Dreamer 48**(lvl) filter size is used, 4 level of convolution,
-#       Layer Normalizatin instead of Batch
 # NOTE: residual blocks are not used inside dreamer
 class Encoder(nn.Module):
 
@@ -176,18 +187,18 @@ class Decoder(nn.Module):
         layers = []
         self.channel_step = 48
         # 2**(len(kernel_sizes)-1)*channel_step
-        self.convin = nn.Linear(32*32, 32*self.channel_step)
+        self.convin = nn.Linear(32 * 32, 32 * self.channel_step)
 
-        in_channels = 32*self.channel_step #2**(len(kernel_sizes) - 1) * self.channel_step
+        in_channels = 32 * self.channel_step  #2**(len(kernel_sizes) - 1) * self.channel_step
         for i, k in enumerate(kernel_sizes):
             out_channels = 2**(len(kernel_sizes) - i - 2) * self.channel_step
             if i == len(kernel_sizes) - 1:
                 out_channels = 3
-                layers.append(
-                    nn.ConvTranspose2d(in_channels, 3, kernel_size=k, stride=2))
+                layers.append(nn.ConvTranspose2d(in_channels, 3, kernel_size=k, stride=2))
             else:
                 layers.append(
-                    nn.ConvTranspose2d(in_channels, out_channels, kernel_size=k, stride=2))
+                    nn.ConvTranspose2d(in_channels, out_channels, kernel_size=k,
+                                       stride=2))
                 layers.append(nn.ELU(inplace=True))
                 layers.append(nn.BatchNorm2d(out_channels))
             in_channels = out_channels
@@ -195,7 +206,7 @@ class Decoder(nn.Module):
 
     def forward(self, X):
         x = self.convin(X)
-        x = x.view(-1, 32*self.channel_step, 1, 1)
+        x = x.view(-1, 32 * self.channel_step, 1, 1)
         return self.net(x)
 
 
@@ -217,20 +228,15 @@ class WorldModel(nn.Module):
                                     actions_num,
                                     categories_num=latent_classes)
         self.encoder = Encoder()
-        from torchsummary import summary
-
-        # summary(self.encoder, input_size=(3, 64, 64))
         self.image_predictor = Decoder()
-        # FIXME: in Dreamer paper it is 4 hidden layers with 400 hidden units
-        # FIXME: in Dramer paper it has Layer Normalization after Dense
         self.reward_predictor = fc_nn_generator(rssm_dim + latent_dim * latent_classes,
                                                 1,
-                                                hidden_size=128,
-                                                num_layers=3)
+                                                hidden_size=400,
+                                                num_layers=4)
         self.discount_predictor = fc_nn_generator(rssm_dim + latent_dim * latent_classes,
                                                   1,
-                                                  hidden_size=128,
-                                                  num_layers=3,
+                                                  hidden_size=400,
+                                                  num_layers=4,
                                                   final_activation=nn.Sigmoid)
 
         self.optimizer = torch.optim.Adam(itertools.chain(
@@ -239,54 +245,69 @@ class WorldModel(nn.Module):
             self.discount_predictor.parameters()),
                                           lr=2e-4)
 
-    def forward(self, X):
-        pass
+    def predict_next(self, latent_repr, action, world_state: t.Optional[torch.Tensor]):
+        determ_state, next_repr_dist = self.recurrent_model.predict_next(
+            latent_repr.unsqueeze(0), action.unsqueeze(0), world_state)
 
-    def train(self, s: torch.Tensor, a: torch.Tensor, r: torch.Tensor,
+        next_repr = next_repr_dist.sample().reshape(-1, self.latent_dim * self.latent_classes)
+        reward = self.reward_predictor(torch.concat([determ_state.squeeze(0), next_repr], dim=1))
+        is_finished = self.discount_predictor( torch.concat([determ_state.squeeze(0), next_repr], dim=1))
+        return determ_state, next_repr, reward, is_finished
+
+    def train(self, obs: torch.Tensor, a: torch.Tensor, r: torch.Tensor,
               is_finished: torch.Tensor):
-        b, h, w, _ = s.shape  # s <- BxHxWx3
+        b, h, w, _ = obs.shape  # s <- BxHxWx3
 
-        s = ((s.type(torch.float32) / 255.0) - 0.5).permute(0, 3, 1, 2)
-        embed = self.encoder(s)
+        obs = ((obs.type(torch.float32) / 255.0) - 0.5).permute(0, 3, 1, 2)
+        embed = self.encoder(obs)
         embed = embed.view(b // self.cluster_size, self.cluster_size, -1)
 
-        s = s.view(-1, self.cluster_size, 3, h, w)
+        obs = obs.view(-1, self.cluster_size, 3, h, w)
         a = a.view(-1, self.cluster_size, a.shape[1])
         r = r.view(-1, self.cluster_size, 1)
         f = is_finished.view(-1, self.cluster_size, 1)
 
         h_prev = [
             torch.zeros((1, b // self.cluster_size, self.rssm_dim)),
-            torch.zeros((1, b // self.cluster_size, self.latent_dim*self.latent_classes))
+            torch.zeros(
+                (1, b // self.cluster_size, self.latent_dim * self.latent_classes))
         ]
         losses = defaultdict(lambda: torch.zeros(1))
 
         def KL(dist1, dist2):
             KL_ = torch.distributions.kl_divergence
             Dist = torch.distributions.OneHotCategoricalStraightThrough
-            return self.kl_beta *(self.alpha * KL_(dist1, Dist(logits=dist2.logits.detach())).mean() +
-            (1 - self.alpha) * KL_(Dist(logits=dist1.logits.detach()), dist2).mean())
+            return self.kl_beta * (
+                self.alpha * KL_(dist1, Dist(logits=dist2.logits.detach())).mean() +
+                (1 - self.alpha) * KL_(Dist(logits=dist1.logits.detach()), dist2).mean())
+
+        latent_vars = []
 
         for t in range(self.cluster_size):
             # s_t <- 1xB^xHxWx3
-            x_t, embed_t, a_t, r_t, f_t = s[:, t], embed[:, t].unsqueeze(
+            x_t, embed_t, a_t, r_t, f_t = obs[:, t], embed[:, t].unsqueeze(
                 0), a[:, t].unsqueeze(0), r[:, t], f[:, t]
 
             determ_t, prior_stoch_dist, posterior_stoch_dist = self.recurrent_model(
                 h_prev, embed_t, a_t)
-            posterior_stoch = posterior_stoch_dist.rsample().reshape(-1, self.latent_dim*self.latent_classes)
+            posterior_stoch = posterior_stoch_dist.rsample().reshape(
+                -1, self.latent_dim * self.latent_classes)
 
-            r_t_pred = self.reward_predictor(torch.concat([determ_t.squeeze(0), posterior_stoch], dim=1))
-            f_t_pred = self.discount_predictor(torch.concat([determ_t.squeeze(0), posterior_stoch], dim=1))
+            r_t_pred = self.reward_predictor(
+                torch.concat([determ_t.squeeze(0), posterior_stoch], dim=1))
+            f_t_pred = self.discount_predictor(
+                torch.concat([determ_t.squeeze(0), posterior_stoch], dim=1))
 
             x_r = self.image_predictor(posterior_stoch)
 
             losses['loss_reconstruction'] = nn.functional.mse_loss(x_t, x_r)
             losses['loss_reward_pred'] += F.mse_loss(r_t, r_t_pred)
-            losses['loss_discount_pred'] += F.cross_entropy(f_t.type(torch.float32), f_t_pred)
+            losses['loss_discount_pred'] += F.cross_entropy(f_t.type(torch.float32),
+                                                            f_t_pred)
             losses['loss_kl_reg'] += KL(prior_stoch_dist, posterior_stoch_dist)
 
             h_prev = [determ_t, posterior_stoch.unsqueeze(0)]
+            latent_vars.append(posterior_stoch.detach())
 
         loss = torch.Tensor(1)
         for l in losses.values():
@@ -296,7 +317,48 @@ class WorldModel(nn.Module):
         loss.backward()
         self.optimizer.step()
 
-        return {l: val.detach() for l, val in losses.items()}
+        return {l: val.detach() for l, val in losses.items()}, torch.stack(latent_vars)
+
+
+class ImaginativeActorCritic(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+        # mixing of reinforce and maximizing value func
+        self.rho = 0  # for dm_control it is zero in Dreamer (Atari 1)
+        # scale for entropy
+        self.eta = 1e-4
+        # parameter for n-step return for value function
+        self.lambda_par = 0.95
+
+        # NOTE: stochastic
+        # MLP with ELU activation
+        # Output layer categorical distribution
+        self.actor = ...
+
+        # NOTE: deterministic
+        # MLP with ELU activation
+        # Uses Q-network and Actor to chose actions
+        self.critic = ...
+        self.target_actor = ...
+
+    def get_action(self, z):
+        b, _ = z.shape
+        return torch.ones((b, 1))
+
+    def estimate_value(self, z) -> torch.Tensor:
+        ...
+
+    # NOTE: use target network for calculating
+    #       labmda target
+    def lambda_return(self):
+        ...
+
+    def calculate_loss(self):
+        # Critic <- Bellman return ( (V - V_lambda)^2 )
+        # Bellman return for critic
+        # Actor <- reinforce + maximize value_func + maximize actor entropy
+        ...
 
 
 class DreamerV2(RlAgent):
@@ -310,15 +372,33 @@ class DreamerV2(RlAgent):
                  rssm_dim: int,
                  discount_factor: float,
                  kl_loss_scale: float,
+                 imagination_horizon: int,
                  device_type: str = 'cpu'):
 
+        self.imagination_horizon = imagination_horizon
         self.cluster_size = batch_cluster_size
         self.actions_num = actions_num
+        self.H = imagination_horizon
         self.gamma = discount_factor
 
         self.world_model = WorldModel(batch_cluster_size, latent_dim, latent_classes,
                                       rssm_dim, actions_num,
                                       kl_loss_scale).to(device_type)
+        self.actor_critic = ImaginativeActorCritic()
+
+    def imagine_trajectory(
+            self,
+            z_0) -> list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
+        rollout = []
+        world_state = None
+        z = z_0
+        for _ in range(self.imagination_horizon):
+            a = self.actor_critic.get_action(z)
+            world_state, next_z, reward, is_finished = self.world_model.predict_next(
+                z, a, world_state)
+            rollout.append((z, a, next_z, reward, is_finished))
+            z = next_z
+        return rollout
 
     def get_action(self, obs: State) -> Action:
         return self.actions_num
@@ -326,11 +406,8 @@ class DreamerV2(RlAgent):
     def from_np(self, arr: np.ndarray):
         return torch.from_numpy(arr).to(next(self.world_model.parameters()).device)
 
-    def train(self, s: Observations, a: Actions, r: Rewards, next: States,
+    def train(self, s: Observations, a: Actions, r: Rewards, next: Observations,
               is_finished: TerminationFlags):
-        # NOTE: next is currently incorrect (state instead of img), but also unused
-        # FIXME: next should be correct, as World model is trained on triplets
-        #        (h_prev, action, next_state)
 
         s = self.from_np(s)
         a = self.from_np(a)
@@ -338,4 +415,14 @@ class DreamerV2(RlAgent):
         next = self.from_np(next)
         is_finished = self.from_np(is_finished)
 
-        return self.world_model.train(s, a, r, is_finished)
+        # take some latent embeddings as initial step
+        losses, discovered_latents = self.world_model.train(next, a, r, is_finished)
+
+        perm = torch.randperm(discovered_latents.size(0))
+        idx = perm[:12]
+        initial_states = discovered_latents[idx]
+
+        for z_0 in initial_states:
+            rollout = self.imagine_trajectory(z_0)
+
+        return losses

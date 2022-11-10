@@ -35,7 +35,7 @@ def main(cfg: DictConfig):
 
     buff = ReplayBuffer()
     obs_res = cfg.env.obs_res if cfg.env.run_on_pixels else None
-    fillup_replay_buffer(env, buff, cfg.training.batch_size, obs_res=obs_res)
+    fillup_replay_buffer(env, buff, cfg.training.batch_size, obs_res=obs_res, run_on_obs=cfg.env.run_on_pixels)
 
     action_disritizer = ActionDiscritizer(env.action_spec(), values_per_dim=10)
     metrics_evaluator = MetricsEvaluator()
@@ -81,17 +81,19 @@ def main(cfg: DictConfig):
             match cfg.env.type:
                 case "dm_control":
                     new_state, reward, terminated = decode_dm_ts(env.step(action_disritizer.undiscretize(action)))
-                    # FIXME: if run_on_pixels next_state should also be observation
-                    obs = env.physics.render(*cfg.env.obs_res, camera_id=0) if cfg.env.run_on_pixels else None
+                    new_obs = env.physics.render(*cfg.env.obs_res, camera_id=0) if cfg.env.run_on_pixels else None
                 case "gym":
                     new_state, reward, terminated, _, _ = env.step(action)
                     action = action_disritizer.undiscretize(action)
                     obs = None
 
-            buff.add_sample(state, action, reward, new_state, terminated, obs)
+            if cfg.env.run_on_pixels:
+                buff.add_sample(obs, action, reward, new_obs, terminated, obs)
+            else:
+                buff.add_sample(state, action, reward, new_state, terminated, obs)
 
-            # FIXME: unintuitive that batch_size is now number of total
-            #        samples, but not amount of sequences for recurrent model
+            # NOTE: unintuitive that batch_size is now number of total
+            #       samples, but not amount of sequences for recurrent model
             s, a, r, n, f = buff.sample(cfg.training.batch_size,
                                         return_observation=cfg.env.run_on_pixels,
                                         cluster_size=cfg.agent.get('batch_cluster_size', 1))

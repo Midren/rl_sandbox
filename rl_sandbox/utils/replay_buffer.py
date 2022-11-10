@@ -1,16 +1,15 @@
 import typing as t
-from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
 from nptyping import Bool, Float, Int, NDArray, Shape
 
 Observation = NDArray[Shape["*,*,3"], Int]
-State = NDArray[Shape["*"], Float]
+State = NDArray[Shape["*"], Float] | Observation
 Action = NDArray[Shape["*"], Int]
 
 Observations = NDArray[Shape["*,*,*,3"], Int]
-States = NDArray[Shape["*,*"], Float]
+States = NDArray[Shape["*,*"], Float] | Observations
 Actions = NDArray[Shape["*,*"], Int]
 Rewards = NDArray[Shape["*"], Float]
 TerminationFlags = NDArray[Shape["*"], Bool]
@@ -64,7 +63,7 @@ class ReplayBuffer:
                 self.observations = self.observations[:self.max_len]
 
     def add_sample(self, s: State, a: Action, r: float, n: State, f: bool,
-                   o: t.Optional[Observation]):
+                   o: t.Optional[Observation] = None):
         rollout = Rollout(np.array([s]), np.expand_dims(np.array([a]), 0),
                           np.array([r], dtype=np.float32), np.array([n]), np.array([f]),
                           np.array([o]) if o is not None else None)
