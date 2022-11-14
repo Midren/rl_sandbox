@@ -1,14 +1,14 @@
-import gym
 import hydra
 import numpy as np
-from dm_control import suite
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.tensorboard.writer import SummaryWriter
 from tqdm import tqdm
+from unpackable import unpack
 
 from rl_sandbox.agents.random_agent import RandomAgent
 from rl_sandbox.metrics import MetricsEvaluator
-from rl_sandbox.utils.dm_control import ActionDiscritizer, decode_dm_ts
+from rl_sandbox.utils.dm_control import ActionDiscritizer
+from rl_sandbox.utils.env import Env
 from rl_sandbox.utils.replay_buffer import ReplayBuffer
 from rl_sandbox.utils.rollout_generation import (collect_rollout_num,
                                                  fillup_replay_buffer)
@@ -19,40 +19,19 @@ from rl_sandbox.utils.schedulers import LinearScheduler
 def main(cfg: DictConfig):
     # print(OmegaConf.to_yaml(cfg))
 
-    match cfg.env.type:
-        case "dm_control":
-            env = suite.load(domain_name=cfg.env.domain_name,
-                             task_name=cfg.env.task_name)
-            visualized_env = env
-        case "gym":
-            env = gym.make(cfg.env)
-            visualized_env = gym.make(cfg.env, render_mode='rgb_array_list')
-            if cfg.env.run_on_pixels:
-                raise NotImplementedError("Run on pixels supported only for 'dm_control'")
-        case _:
-            raise RuntimeError("Invalid environment type")
+    env: Env = hydra.utils.instantiate(cfg.env)
 
     # TODO: As images take much more data, rewrite replay buffer to be
     # more memory efficient
     buff = ReplayBuffer()
-    obs_res = cfg.env.obs_res if cfg.env.run_on_pixels else None
-    fillup_replay_buffer(env, buff, cfg.training.batch_size, obs_res=obs_res, run_on_obs=cfg.env.run_on_pixels)
+    fillup_replay_buffer(env, buff, cfg.training.batch_size)
 
-    action_disritizer = ActionDiscritizer(env.action_spec(), values_per_dim=cfg.env.action_discrete_num)
     metrics_evaluator = MetricsEvaluator()
-
-    match cfg.env.type:
-        case "dm_control":
-            obs_space_num = sum([v.shape[0] for v in env.observation_spec().values()])
-            if cfg.env.run_on_pixels:
-                obs_space_num = (*cfg.env.obs_res, 3)
-        case "gym":
-            obs_space_num = env.observation_space.shape[0]
 
     exploration_agent = RandomAgent(env)
     agent = hydra.utils.instantiate(cfg.agent,
-                            obs_space_num=obs_space_num,
-                            actions_num=(cfg.env.action_discrete_num),
+                            obs_space_num=env.observation_space.shape[0],
+                            actions_num=env.action_space.shape[0],
                             device_type=cfg.device_type)
 
     writer = SummaryWriter()
@@ -63,12 +42,7 @@ def main(cfg: DictConfig):
     for epoch_num in tqdm(range(cfg.training.epochs)):
         ### Training and exploration
 
-        match cfg.env.type:
-            case "dm_control":
-                state, _, _ = decode_dm_ts(env.reset())
-                obs = env.physics.render(*cfg.env.obs_res, camera_id=0) if cfg.env.run_on_pixels else None
-            case "gym":
-                state, _ = env.reset()
+        state, _, _ = unpack(env.reset())
         agent.reset()
 
         terminated = False
@@ -76,39 +50,22 @@ def main(cfg: DictConfig):
             # TODO: For dreamer, add noise for sampling
             if np.random.random() > scheduler.step():
                 action = exploration_agent.get_action(state)
-                action = action_disritizer.discretize(action)
             else:
-                action = agent.get_action(obs if cfg.env.run_on_pixels else state)
+                action = agent.get_action(state)
 
-            match cfg.env.type:
-                case "dm_control":
-                    new_state, reward, terminated = decode_dm_ts(env.step(action_disritizer.undiscretize(action)))
-                    new_obs = env.physics.render(*cfg.env.obs_res, camera_id=0) if cfg.env.run_on_pixels else None
-                case "gym":
-                    new_state, reward, terminated, _, _ = env.step(action)
-                    action = action_disritizer.undiscretize(action)
-                    obs = None
+            new_state, reward, terminated = unpack(env.step(action))
 
-            if cfg.env.run_on_pixels:
-                buff.add_sample(obs, action, reward, new_obs, terminated, obs)
-            else:
-                buff.add_sample(state, action, reward, new_state, terminated, obs)
+            buff.add_sample(state, action, reward, new_state, terminated)
 
             # NOTE: unintuitive that batch_size is now number of total
             #       samples, but not amount of sequences for recurrent model
             s, a, r, n, f = buff.sample(cfg.training.batch_size,
-                                        return_observation=cfg.env.run_on_pixels,
                                         cluster_size=cfg.agent.get('batch_cluster_size', 1))
 
             # NOTE: Dreamer makes 4 policy steps per gradient descent
             losses = agent.train(s, a, r, n, f)
-            if isinstance(losses, np.ndarray):
-                writer.add_scalar('train/loss', loss, global_step)
-            elif isinstance(losses, dict):
-                for loss_name, loss in losses.items():
-                    writer.add_scalar(f'train/{loss_name}', loss, global_step)
-            else:
-                raise RuntimeError("AAAA, very bad")
+            for loss_name, loss in losses.items():
+                writer.add_scalar(f'train/{loss_name}', loss, global_step)
             global_step += 1
 
         ### Validation

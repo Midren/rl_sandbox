@@ -64,7 +64,7 @@ class ReplayBuffer:
 
     def add_sample(self, s: State, a: Action, r: float, n: State, f: bool,
                    o: t.Optional[Observation] = None):
-        rollout = Rollout(np.array([s]), np.expand_dims(np.array([a]), 0),
+        rollout = Rollout(np.array([s]), np.array([a]),
                           np.array([r], dtype=np.float32), np.array([n]), np.array([f]),
                           np.array([o]) if o is not None else None)
         self.add_rollout(rollout)
@@ -75,13 +75,11 @@ class ReplayBuffer:
     def sample(
         self,
         batch_size: int,
-        return_observation: bool = False,
         cluster_size: int = 1
     ) -> t.Tuple[States, Actions, Rewards, States, TerminationFlags]:
         # TODO: add warning if batch_size % cluster_size != 0
         # FIXME: currently doesn't take into account discontinuations between between rollouts
         indeces = np.random.choice(len(self.states) - (cluster_size - 1), batch_size//cluster_size)
         indeces = np.stack([indeces + i for i in range(cluster_size)]).flatten(order='F')
-        o = self.states[indeces] if not return_observation else self.observations[indeces]
-        return o, self.actions[indeces], self.rewards[indeces], self.next_states[
+        return self.states[indeces], self.actions[indeces], self.rewards[indeces], self.next_states[
             indeces], self.is_finished[indeces]

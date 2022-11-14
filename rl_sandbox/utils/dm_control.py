@@ -37,14 +37,3 @@ class ActionDiscritizer:
         for k, vals in zip(reversed(ks), self.grid):
             a.append(vals[k])
         return np.array(a)
-
-def decode_dm_ts(time_step):
-    state = time_step.observation
-    state = np.concatenate([state[s] for s in state], dtype=np.float32)
-    reward = time_step.reward
-    terminated = time_step.last()
-    # if time_step.discount is not None:
-    #     terminated = not time_step.discount
-    # else:
-    #     terminated = False
-    return state, reward, terminated

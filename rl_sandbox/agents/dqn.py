@@ -49,4 +49,4 @@ class DqnAgent(RlAgent):
         loss.backward()
         self.optimizer.step()
 
-        return loss.detach().cpu()
+        return {'loss': loss.detach().cpu()}

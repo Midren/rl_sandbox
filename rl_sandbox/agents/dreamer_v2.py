@@ -147,9 +147,7 @@ class RSSM(nn.Module):
 
         # Use zero vector for prev_state of first
         if h_prev is None:
-            h_prev = (torch.zeros((*action.shape[:-1], self.hidden_size)),
-                      torch.zeros(
-                          (*action.shape[:-1], self.latent_dim * self.latent_classes)))
+            h_prev = (torch.zeros((*action.shape[:-1], self.hidden_size)), torch.zeros((*action.shape[:-1], self.latent_dim * self.latent_classes)))
         deter_prev, stoch_prev = h_prev
         determ, prior_stoch_dist = self.predict_next(stoch_prev,
                                                      action,
@@ -261,22 +259,21 @@ class WorldModel(nn.Module):
             torch.concat([determ_state.squeeze(0), next_repr], dim=1))
         return determ_state, next_repr, reward, is_finished
 
-    def get_latent(self, obs: torch.Tensor, state):
+    def get_latent(self, obs: torch.Tensor, action, state):
         embed = self.encoder(obs)
-        determ, _, latent_repr_dist = self.recurrent_model(state, embed.unsqueeze(0),
-                                                           self._last_action)
+        determ, _, latent_repr_dist = self.recurrent_model(state, embed.unsqueeze(0), action)
         latent_repr = latent_repr_dist.rsample().reshape(-1, 32 * 32)
         return determ, latent_repr.unsqueeze(0)
 
     def train(self, obs: torch.Tensor, a: torch.Tensor, r: torch.Tensor,
               is_finished: torch.Tensor):
-        b, h, w, _ = obs.shape  # s <- BxHxWx3
+        b, _, h, w = obs.shape  # s <- BxHxWx3
 
         embed = self.encoder(obs)
         embed = embed.view(b // self.cluster_size, self.cluster_size, -1)
 
         obs = obs.view(-1, self.cluster_size, 3, h, w)
-        a = a.view(-1, self.cluster_size, a.shape[1])
+        a = a.view(-1, self.cluster_size, 1)
         r = r.view(-1, self.cluster_size, 1)
         f = is_finished.view(-1, self.cluster_size, 1)
 
@@ -409,7 +406,7 @@ class DreamerV2(RlAgent):
         self.world_model = WorldModel(batch_cluster_size, latent_dim, latent_classes,
                                       rssm_dim, actions_num,
                                       kl_loss_scale).to(device_type)
-        self.actor = fc_nn_generator(latent_dim,
+        self.actor = fc_nn_generator(latent_dim * latent_classes,
                                      actions_num,
                                      400,
                                      4,
@@ -445,20 +442,20 @@ class DreamerV2(RlAgent):
         self._last_action = torch.zeros((1, 1, self.actions_num))
 
     def preprocess_obs(self, obs: torch.Tensor):
-        order = list(range(obs.shape))
+        order = list(range(len(obs.shape)))
         # Swap channel from last to 3 from last
-        order = order[:-3] + [order[-1]] + [order[-3:-1]]
+        order = order[:-3] + [order[-1]] + order[-3:-1]
         return ((obs.type(torch.float32) / 255.0) - 0.5).permute(order)
 
     def get_action(self, obs: Observation) -> Action:
         # NOTE: pytorch fails without .copy() only when get_action is called
         obs = torch.from_numpy(obs.copy()).to(next(self.world_model.parameters()).device)
-        obs = self.preprocess_obs(obs)
+        obs = self.preprocess_obs(obs).unsqueeze(0)
 
-        self._state = self.world_model.get_latent(obs, self._state)
-        self._last_action = self.actor(self._state[1]).rsample().unsqueeze(0)
+        self._state = self.world_model.get_latent(obs, self._last_action, self._state)
+        self._last_action = self.actor(self._state[1]).rsample()
 
-        return self._last_action.squeeze().detach().cpu().numpy().argmax()
+        return np.array([self._last_action.squeeze().detach().cpu().numpy().argmax()])
 
     def from_np(self, arr: np.ndarray):
         return torch.from_numpy(arr).to(next(self.world_model.parameters()).device)
@@ -470,7 +467,7 @@ class DreamerV2(RlAgent):
         a = self.from_np(a)
         a = F.one_hot(a, num_classes=self.actions_num).squeeze()
         r = self.from_np(r)
-        next_obs = self.from_np(next_obs)
+        next_obs = self.preprocess_obs(self.from_np(next_obs))
         is_finished = self.from_np(is_finished)
 
         # take some latent embeddings as initial step
