@@ -16,10 +16,11 @@ def collect_rollout(env: Env,
 
     s, a, r, n, f, o = [], [], [], [], [], []
 
-    state, _, terminated = unpack(env.reset())
-
     if agent is None:
         agent = RandomAgent(env)
+
+    state, _, terminated = unpack(env.reset())
+    agent.reset()
 
     while not terminated:
         action = agent.get_action(state)

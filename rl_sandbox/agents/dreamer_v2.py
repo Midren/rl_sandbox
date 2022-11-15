@@ -2,6 +2,7 @@ import itertools
 import typing as t
 from collections import defaultdict
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch import nn
@@ -220,7 +221,7 @@ class Decoder(nn.Module):
 class WorldModel(nn.Module):
 
     def __init__(self, batch_cluster_size, latent_dim, latent_classes, rssm_dim,
-                 actions_num, kl_loss_scale):
+                 actions_num, kl_loss_scale, kl_loss_balancing):
         super().__init__()
         self.kl_beta = kl_loss_scale
         self.rssm_dim = rssm_dim
@@ -229,7 +230,7 @@ class WorldModel(nn.Module):
         self.cluster_size = batch_cluster_size
         self.actions_num = actions_num
         # kl loss balancing (prior/posterior)
-        self.alpha = 0.8
+        self.alpha = kl_loss_balancing
 
         self.recurrent_model = RSSM(latent_dim,
                                     rssm_dim,
@@ -249,12 +250,6 @@ class WorldModel(nn.Module):
                                                   intermediate_activation=nn.ELU,
                                                   final_activation=nn.Sigmoid)
 
-        self.optimizer = torch.optim.Adam(itertools.chain(
-            self.recurrent_model.parameters(), self.encoder.parameters(),
-            self.image_predictor.parameters(), self.reward_predictor.parameters(),
-            self.discount_predictor.parameters()),
-                                          lr=2e-4)
-
     def predict_next(self, latent_repr, action, world_state: t.Optional[torch.Tensor]):
         determ_state, next_repr_dist = self.recurrent_model.predict_next(
             latent_repr.unsqueeze(0), action.unsqueeze(0), world_state)
@@ -271,11 +266,10 @@ class WorldModel(nn.Module):
         embed = self.encoder(obs)
         determ, _, latent_repr_dist = self.recurrent_model(state, embed.unsqueeze(0),
                                                            action)
-        latent_repr = latent_repr_dist.rsample().reshape(-1, 32 * 32)
-        return determ, latent_repr.unsqueeze(0)
+        return determ, latent_repr_dist
 
-    def train(self, obs: torch.Tensor, a: torch.Tensor, r: torch.Tensor,
-              is_finished: torch.Tensor):
+    def calculate_loss(self, obs: torch.Tensor, a: torch.Tensor, r: torch.Tensor,
+                       is_finished: torch.Tensor):
         b, _, h, w = obs.shape  # s <- BxHxWx3
 
         embed = self.encoder(obs)
@@ -324,19 +318,9 @@ class WorldModel(nn.Module):
             h_prev = [determ_t, posterior_stoch.unsqueeze(0)]
             latent_vars.append(posterior_stoch.detach())
 
-        # NOTE: 'aten::nonzero' inside KL divergence is not currently supported on M1 Pro MPS device
-        loss = torch.Tensor(1).to(next(self.encoder.parameters()).device)
-        for l in losses.values():
-            loss += l
-
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-
         discovered_latents = torch.stack(latent_vars).reshape(
             -1, self.latent_dim * self.latent_classes)
-        return {l: val.detach().cpu().item()
-                for l, val in losses.items()}, discovered_latents
+        return losses, discovered_latents
 
 
 class ImaginativeCritic(nn.Module):
@@ -395,16 +379,18 @@ class DreamerV2(RlAgent):
             rssm_dim: int,
             discount_factor: float,
             kl_loss_scale: float,
+            kl_loss_balancing: float,
             imagination_horizon: int,
             critic_update_interval: int,
             actor_reinforce_fraction: float,
             actor_entropy_scale: float,
             critic_soft_update_fraction: float,
             critic_value_target_lambda: float,
+            world_model_lr: float,
+            actor_lr: float,
+            critic_lr: float,
             device_type: str = 'cpu'):
 
-        self._state = None
-        self._last_action = torch.zeros(actions_num, device=device_type)
         self.actions_num = actions_num
         self.imagination_horizon = imagination_horizon
         self.cluster_size = batch_cluster_size
@@ -415,8 +401,8 @@ class DreamerV2(RlAgent):
         self.eta = actor_entropy_scale
 
         self.world_model = WorldModel(batch_cluster_size, latent_dim, latent_classes,
-                                      rssm_dim, actions_num,
-                                      kl_loss_scale).to(device_type)
+                                      rssm_dim, actions_num, kl_loss_scale,
+                                      kl_loss_balancing).to(device_type)
         self.actor = fc_nn_generator(latent_dim * latent_classes,
                                      actions_num,
                                      400,
@@ -429,8 +415,19 @@ class DreamerV2(RlAgent):
                                         latent_dim * latent_classes,
                                         actions_num).to(device_type)
 
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=4e-5)
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=1e-4)
+        self.world_model_optimizer = torch.optim.AdamW(self.world_model.parameters(),
+                                                       lr=world_model_lr,
+                                                       eps=1e-5,
+                                                       weight_decay=1e-6)
+        self.actor_optimizer = torch.optim.AdamW(self.actor.parameters(),
+                                                 lr=actor_lr,
+                                                 eps=1e-5,
+                                                 weight_decay=1e-6)
+        self.critic_optimizer = torch.optim.AdamW(self.critic.parameters(),
+                                                  lr=critic_lr,
+                                                  eps=1e-5,
+                                                  weight_decay=1e-6)
+        self.reset()
 
     def imagine_trajectory(
         self, z_0
@@ -452,6 +449,9 @@ class DreamerV2(RlAgent):
         self._state = None
         self._last_action = torch.zeros((1, 1, self.actions_num),
                                         device=next(self.world_model.parameters()).device)
+        self._latent_probs = torch.zeros((32, 32))
+        self._action_probs = torch.zeros((self.actions_num))
+        self._stored_steps = 0
 
     def preprocess_obs(self, obs: torch.Tensor):
         order = list(range(len(obs.shape)))
@@ -464,8 +464,17 @@ class DreamerV2(RlAgent):
         obs = torch.from_numpy(obs.copy()).to(next(self.world_model.parameters()).device)
         obs = self.preprocess_obs(obs).unsqueeze(0)
 
-        self._state = self.world_model.get_latent(obs, self._last_action, self._state)
-        self._last_action = self.actor(self._state[1]).rsample()
+        determ, latent_repr_dist = self.world_model.get_latent(obs, self._last_action,
+                                                               self._state)
+        self._state = (determ, latent_repr_dist.rsample().reshape(-1,
+                                                                  32 * 32).unsqueeze(0))
+
+        actor_dist = self.actor(self._state[1])
+        self._last_action = actor_dist.rsample()
+
+        self._action_probs += actor_dist.probs.squeeze()
+        self._latent_probs += latent_repr_dist.probs.squeeze()
+        self._stored_steps += 1
 
         return np.array([self._last_action.squeeze().detach().cpu().numpy().argmax()])
 
@@ -475,7 +484,10 @@ class DreamerV2(RlAgent):
 
         action = F.one_hot(self.from_np(init_action).to(torch.int64),
                            num_classes=self.actions_num).squeeze()
-        z_0 = self.world_model.get_latent(obs, action.unsqueeze(0).unsqueeze(0), None)[1]
+        z_0 = self.world_model.get_latent(obs,
+                                          action.unsqueeze(0).unsqueeze(0),
+                                          None)[1].rsample().reshape(-1,
+                                                                     32 * 32).unsqueeze(0)
         imagined_rollout = self.imagine_trajectory(z_0.squeeze())
         zs, _, _, _, _ = zip(*imagined_rollout)
         reconstructed_plan = []
@@ -499,10 +511,17 @@ class DreamerV2(RlAgent):
                 0, 3, 1, 2) for init_idx in init_indeces
         ],
                                 axis=3)
+        videos_comparison = np.expand_dims(np.concatenate([videos, videos_r], axis=2), 0)
+        latent_hist = (self._latent_probs/self._stored_steps*255.0).detach().cpu().numpy().reshape(-1, 32, 32)
+        action_hist = (self._action_probs/self._stored_steps).detach().cpu().numpy()
 
-        logger.add_video('val/dreamed_rollout',
-                         np.expand_dims(np.concatenate([videos, videos_r], axis=2), 0),
-                         epoch_num)
+        # logger.add_histogram('val/action_probs', action_hist, epoch_num)
+        fig = plt.Figure()
+        ax = fig.add_axes([0,0,1,1])
+        ax.bar(np.arange(self.actions_num), action_hist)
+        logger.add_figure('val/action_probs', fig, epoch_num)
+        logger.add_image('val/latent_probs', latent_hist, epoch_num)
+        logger.add_video('val/dreamed_rollout', videos_comparison, epoch_num)
 
     def from_np(self, arr: np.ndarray):
         return torch.from_numpy(arr).to(next(self.world_model.parameters()).device)
@@ -512,14 +531,23 @@ class DreamerV2(RlAgent):
 
         obs = self.preprocess_obs(self.from_np(obs))
         a = self.from_np(a).to(torch.int64)
-        # Works incorrect
         a = F.one_hot(a, num_classes=self.actions_num).squeeze()
         r = self.from_np(r)
         next_obs = self.preprocess_obs(self.from_np(next_obs))
         is_finished = self.from_np(is_finished)
 
         # take some latent embeddings as initial step
-        losses, discovered_latents = self.world_model.train(next_obs, a, r, is_finished)
+        losses, discovered_latents = self.world_model.calculate_loss(
+            next_obs, a, r, is_finished)
+
+        # NOTE: 'aten::nonzero' inside KL divergence is not currently supported on M1 Pro MPS device
+        world_model_loss = torch.Tensor(1).to(next(self.world_model.parameters()).device)
+        for l in losses.values():
+            world_model_loss += l
+
+        self.world_model_optimizer.zero_grad()
+        world_model_loss.backward()
+        self.world_model_optimizer.step()
 
         idx = torch.randperm(discovered_latents.size(0))
         initial_states = discovered_latents[idx]
@@ -538,7 +566,8 @@ class DreamerV2(RlAgent):
                                                    reduction='sum')
 
             losses_ac['loss_actor_reinforce'] += 0  # unused in dm_control
-            losses_ac['loss_actor_dynamics_backprop'] += -((1 - self.rho) * vs).mean()
+            losses_ac['loss_actor_dynamics_backprop'] += -(
+                (1 - self.rho) * vs[:-1]).mean()
             losses_ac['loss_actor_entropy'] += self.eta * torch.stack(
                 [a.entropy() for a in action_dists[:-1]]).mean()
             losses_ac['loss_actor'] += losses_ac['loss_actor_reinforce'] + losses_ac[
@@ -552,6 +581,7 @@ class DreamerV2(RlAgent):
         self.critic_optimizer.step()
         self.critic.update_target()
 
+        losses = {l: val.detach().cpu().item() for l, val in losses.items()}
         losses_ac = {l: val.detach().cpu().item() for l, val in losses_ac.items()}
 
         return losses | losses_ac
@@ -562,7 +592,7 @@ class DreamerV2(RlAgent):
                 'epoch': epoch_num,
                 'world_model_state_dict': self.world_model.state_dict(),
                 'world_model_optimizer_state_dict':
-                self.world_model.optimizer.state_dict(),
+                self.world_model_optimizer.state_dict(),
                 'actor_state_dict': self.actor.state_dict(),
                 'critic_state_dict': self.critic.state_dict(),
                 'actor_optimizer_state_dict': self.actor_optimizer.state_dict(),
