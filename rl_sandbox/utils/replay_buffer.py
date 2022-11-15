@@ -1,4 +1,5 @@
 import typing as t
+from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
@@ -28,58 +29,77 @@ class Rollout:
 class ReplayBuffer:
 
     def __init__(self, max_len=2_000):
+        self.rollouts: deque[Rollout] = deque()
+        self.rollouts_len: deque[int] = deque()
+        self.curr_rollout = None
         self.max_len = max_len
-        self.states: States = np.array([])
-        self.actions: Actions = np.array([])
-        self.rewards: Rewards = np.array([])
-        self.next_states: States = np.array([])
-        self.observations: t.Optional[Observations]
+        self.total_num = 0
+
+    def __len__(self):
+        return self.total_num
 
     def add_rollout(self, rollout: Rollout):
-        if len(self.states) == 0:
-            self.states = rollout.states
-            self.actions = rollout.actions
-            self.rewards = rollout.rewards
-            self.next_states = rollout.next_states
-            self.is_finished = rollout.is_finished
-            self.observations = rollout.observations
+        # NOTE: only last next state is stored, all others are induced
+        #       from state on next step
+        rollout.next_states = np.expand_dims(rollout.next_states[-1], 0)
+        self.rollouts.append(rollout)
+        self.total_num += len(self.rollouts[-1].rewards)
+        self.rollouts_len.append(len(self.rollouts[-1].rewards))
+
+        while self.total_num >= self.max_len:
+            self.total_num -= self.rollouts_len[0]
+            self.rollouts_len.popleft()
+            self.rollouts.popleft()
+
+    # Add sample expects that each subsequent sample
+    # will be continuation of last rollout util termination flag true
+    # is encountered
+    def add_sample(self, s: State, a: Action, r: float, n: State, f: bool):
+        if self.curr_rollout is None:
+            self.curr_rollout = Rollout([s], [a], [r], None, [f])
         else:
-            self.states = np.concatenate([self.states, rollout.states])
-            self.actions = np.concatenate([self.actions, rollout.actions])
-            self.rewards = np.concatenate([self.rewards, rollout.rewards])
-            self.next_states = np.concatenate([self.next_states, rollout.next_states])
-            self.is_finished = np.concatenate([self.is_finished, rollout.is_finished])
-            if self.observations is not None:
-                self.observations = np.concatenate(
-                    [self.observations, rollout.observations])
+            self.curr_rollout.states.append(s)
+            self.curr_rollout.actions.append(a)
+            self.curr_rollout.rewards.append(r)
+            self.curr_rollout.is_finished.append(f)
 
-        if len(self.states) >= self.max_len:
-            self.states = self.states[:self.max_len]
-            self.actions = self.actions[:self.max_len]
-            self.rewards = self.rewards[:self.max_len]
-            self.next_states = self.next_states[:self.max_len]
-            self.is_finished = self.is_finished[:self.max_len]
-            if self.observations is not None:
-                self.observations = self.observations[:self.max_len]
-
-    def add_sample(self, s: State, a: Action, r: float, n: State, f: bool,
-                   o: t.Optional[Observation] = None):
-        rollout = Rollout(np.array([s]), np.array([a]),
-                          np.array([r], dtype=np.float32), np.array([n]), np.array([f]),
-                          np.array([o]) if o is not None else None)
-        self.add_rollout(rollout)
+            if f:
+                self.curr_rollout = None
+                self.add_rollout(
+                    Rollout(np.array(self.curr_rollout.states),
+                            np.array(self.curr_rollout.actions),
+                            np.array(self.curr_rollout.rewards, dtype=np.float32),
+                            np.array([n]), np.array(self.curr_rollout.is_finished)))
 
     def can_sample(self, num: int):
-        return len(self.states) >= num
+        return self.total_num >= num
 
     def sample(
         self,
         batch_size: int,
         cluster_size: int = 1
-    ) -> t.Tuple[States, Actions, Rewards, States, TerminationFlags]:
-        # TODO: add warning if batch_size % cluster_size != 0
-        # FIXME: currently doesn't take into account discontinuations between between rollouts
-        indeces = np.random.choice(len(self.states) - (cluster_size - 1), batch_size//cluster_size)
-        indeces = np.stack([indeces + i for i in range(cluster_size)]).flatten(order='F')
-        return self.states[indeces], self.actions[indeces], self.rewards[indeces], self.next_states[
-            indeces], self.is_finished[indeces]
+    ) -> tuple[States, Actions, Rewards, States, TerminationFlags]:
+        seq_num = batch_size // cluster_size
+        # NOTE: constant creation of numpy arrays from self.rollout_len seems terrible for me
+        s, a, r, n, t = [], [], [], [], []
+        r_indeces = np.random.choice(len(self.rollouts),
+                                     seq_num,
+                                     p=np.array(self.rollouts_len) / self.total_num)
+        for r_idx in r_indeces:
+            # NOTE: maybe just no add such small rollouts to buffer
+            assert self.rollouts_len[r_idx] - cluster_size + 1 > 0, "Rollout it too small"
+            s_idx = np.random.choice(self.rollouts_len[r_idx] - cluster_size + 1, 1).item()
+
+            s.append(self.rollouts[r_idx].states[s_idx:s_idx + cluster_size])
+            a.append(self.rollouts[r_idx].actions[s_idx:s_idx + cluster_size])
+            r.append(self.rollouts[r_idx].rewards[s_idx:s_idx + cluster_size])
+            t.append(self.rollouts[r_idx].is_finished[s_idx:s_idx + cluster_size])
+            if s_idx != self.rollouts_len[r_idx] - cluster_size:
+                n.append(self.rollouts[r_idx].states[s_idx+1:s_idx+1 + cluster_size])
+            else:
+                if cluster_size != 1:
+                    n.append(self.rollouts[r_idx].states[s_idx+1:s_idx+1 + cluster_size - 1])
+                n.append(self.rollouts[r_idx].next_states)
+
+        return (np.concatenate(s), np.concatenate(a), np.concatenate(r),
+            np.concatenate(n), np.concatenate(t))

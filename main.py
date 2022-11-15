@@ -7,7 +7,6 @@ from unpackable import unpack
 
 from rl_sandbox.agents.random_agent import RandomAgent
 from rl_sandbox.metrics import MetricsEvaluator
-from rl_sandbox.utils.dm_control import ActionDiscritizer
 from rl_sandbox.utils.env import Env
 from rl_sandbox.utils.replay_buffer import ReplayBuffer
 from rl_sandbox.utils.rollout_generation import (collect_rollout_num,
@@ -21,8 +20,6 @@ def main(cfg: DictConfig):
 
     env: Env = hydra.utils.instantiate(cfg.env)
 
-    # TODO: As images take much more data, rewrite replay buffer to be
-    # more memory efficient
     buff = ReplayBuffer()
     fillup_replay_buffer(env, buff, cfg.training.batch_size)
 
@@ -47,22 +44,23 @@ def main(cfg: DictConfig):
 
         terminated = False
         while not terminated:
-            # TODO: For dreamer, add noise for sampling
-            if np.random.random() > scheduler.step():
-                action = exploration_agent.get_action(state)
-            else:
-                action = agent.get_action(state)
+            if global_step % cfg.training.gradient_steps_per_step == 0:
+                # TODO: For dreamer, add noise for sampling
+                if np.random.random() > scheduler.step():
+                    action = exploration_agent.get_action(state)
+                else:
+                    action = agent.get_action(state)
 
-            new_state, reward, terminated = unpack(env.step(action))
+                new_state, reward, terminated = unpack(env.step(action))
 
-            buff.add_sample(state, action, reward, new_state, terminated)
+                buff.add_sample(state, action, reward, new_state, terminated)
 
             # NOTE: unintuitive that batch_size is now number of total
             #       samples, but not amount of sequences for recurrent model
             s, a, r, n, f = buff.sample(cfg.training.batch_size,
                                         cluster_size=cfg.agent.get('batch_cluster_size', 1))
 
-            # NOTE: Dreamer makes 4 policy steps per gradient descent
+            # TODO: add checkpoint saver for model
             losses = agent.train(s, a, r, n, f)
             for loss_name, loss in losses.items():
                 writer.add_scalar(f'train/{loss_name}', loss, global_step)
@@ -76,7 +74,7 @@ def main(cfg: DictConfig):
                 writer.add_scalar(f'val/{metric_name}', metric, epoch_num)
 
             if cfg.validation.visualize:
-                rollouts = collect_rollout_num(visualized_env, 1, agent, obs_res=cfg.obs_res)
+                rollouts = collect_rollout_num(env, 1, agent, collect_obs=True)
 
                 for rollout in rollouts:
                     video = np.expand_dims(rollout.observations.transpose(0, 3, 1, 2), 0)

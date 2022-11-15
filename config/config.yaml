@@ -9,6 +9,7 @@ device_type: cpu
 training:
   epochs: 5000
   batch_size: 128
+  gradient_steps_per_step: 4
 
 validation:
   rollout_num: 5
