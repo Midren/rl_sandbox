@@ -19,3 +19,7 @@ class RlAgent(metaclass=ABCMeta):
     # properly reseted between rollouts
     def reset(self):
         pass
+
+    @abstractmethod
+    def save_ckpt(self, epoch_num: int, losses: dict[str, float]):
+        pass

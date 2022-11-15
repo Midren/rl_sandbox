@@ -16,3 +16,6 @@ class RandomAgent(RlAgent):
 
     def train(self, s: States, a: Actions, r: Rewards, next: States, is_finished: TerminationFlags):
         pass
+
+    def save_ckpt(self, epoch_num: int, losses: dict[str, float]):
+        pass

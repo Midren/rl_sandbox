@@ -81,24 +81,29 @@ class ActionDisritezer(ActionTransformer):
         return np.array(a)
 
     def transform_space(self, space: gym.spaces.Box):
-        return gym.spaces.Box(0, self.per_dim**len(self.low), dtype=np.uint32)
+        return gym.spaces.Box(0, self.per_dim**len(self.low)-1, dtype=np.int32)
 
 
 class Env(metaclass=ABCMeta):
 
     def __init__(self, run_on_pixels: bool, obs_res: tuple[int, int],
-                 transforms: list[ActionTransformer]):
+                 repeat_action_num: int, transforms: list[ActionTransformer]):
         self.obs_res = obs_res
         self.run_on_pixels = run_on_pixels
+        self.repeat_action_num = repeat_action_num
+        assert self.repeat_action_num >= 1
         self.ac_trans = []
         for t in transforms:
             t.set_env(self)
             self.ac_trans.append(t)
 
     def step(self, action: Action) -> EnvStepResult:
+        action = action.copy()
         for t in reversed(self.ac_trans):
             action = t.transform_action(action)
-        return self._step(action)
+        for _ in range(self.repeat_action_num):
+            res = self._step(action)
+        return res
 
     @abstractmethod
     def _step(self, action: Action) -> EnvStepResult:
@@ -131,8 +136,8 @@ class Env(metaclass=ABCMeta):
 class GymEnv(Env):
 
     def __init__(self, task_name: str, run_on_pixels: bool, obs_res: tuple[int, int],
-                 transforms: list[ActionTransformer]):
-        super().__init__(run_on_pixels, obs_res, transforms)
+                 repeat_action_num: int, transforms: list[ActionTransformer]):
+        super().__init__(run_on_pixels, obs_res, repeat_action_num, transforms)
 
         self.env: gym.Env = gym.make(task_name)
         self.visualized_env: gym.Env = gym.make(task_name, render_mode='rgb_array_list')
@@ -158,11 +163,11 @@ class GymEnv(Env):
 
 class DmEnv(Env):
 
-    def __init__(self, run_on_pixels: bool, obs_res: tuple[int, int], domain_name: str,
-                 task_name: str,
-                 transforms: list[ActionTransformer]):
+    def __init__(self, run_on_pixels: bool, obs_res: tuple[int,
+                                                           int], repeat_action_num: int,
+                 domain_name: str, task_name: str, transforms: list[ActionTransformer]):
         self.env: dmEnviron = suite.load(domain_name=domain_name, task_name=task_name)
-        super().__init__(run_on_pixels, obs_res, transforms)
+        super().__init__(run_on_pixels, obs_res, repeat_action_num, transforms)
 
     def render(self):
         return self.env.physics.render(*self.obs_res, camera_id=0)

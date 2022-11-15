@@ -26,6 +26,7 @@ class Rollout:
     observations: t.Optional[Observations] = None
 
 
+# TODO: make buffer concurrent-friendly
 class ReplayBuffer:
 
     def __init__(self, max_len=2_000):
@@ -64,12 +65,12 @@ class ReplayBuffer:
             self.curr_rollout.is_finished.append(f)
 
             if f:
-                self.curr_rollout = None
                 self.add_rollout(
                     Rollout(np.array(self.curr_rollout.states),
                             np.array(self.curr_rollout.actions),
                             np.array(self.curr_rollout.rewards, dtype=np.float32),
                             np.array([n]), np.array(self.curr_rollout.is_finished)))
+                self.curr_rollout = None
 
     def can_sample(self, num: int):
         return self.total_num >= num

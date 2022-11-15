@@ -32,9 +32,10 @@ def collect_rollout(env: Env,
         n.append(new_state)
         f.append(terminated)
 
-        # FIXME: obs are not collected yet
+        # FIXME: will break for non-DM
+        if collect_obs:
+            o.append(env.render())
         # if collect_obs and isinstance(env, dmEnv):
-        #     o.append(env.render())
         state = new_state
 
     obs = None
@@ -42,7 +43,7 @@ def collect_rollout(env: Env,
     #     case gym.Env():
     #         obs = np.stack(list(env.render())) if obs_res is not None else None
     #     case dmEnv():
-    #         obs = np.array(o) if obs_res is not None else None
+    obs = np.array(o) if collect_obs is not None else None
     return Rollout(np.array(s), np.array(a).reshape(len(s), -1), np.array(r, dtype=np.float32), np.array(n), np.array(f), obs)
 
 def collect_rollout_num(env: Env,
@@ -52,7 +53,7 @@ def collect_rollout_num(env: Env,
     # TODO: paralelyze
     rollouts = []
     for _ in range(num):
-        rollouts.append(collect_rollout(env, agent, obs_res))
+        rollouts.append(collect_rollout(env, agent, collect_obs))
     return rollouts
 
 

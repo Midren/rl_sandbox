@@ -20,15 +20,20 @@ def main(cfg: DictConfig):
 
     env: Env = hydra.utils.instantiate(cfg.env)
 
+    # TODO: add replay buffer implementation, which stores rollouts
+    #       on disk
     buff = ReplayBuffer()
     fillup_replay_buffer(env, buff, cfg.training.batch_size)
 
     metrics_evaluator = MetricsEvaluator()
 
+    # TODO: Implement smarter techniques for exploration
+    #       (Plan2Explore, etc)
     exploration_agent = RandomAgent(env)
     agent = hydra.utils.instantiate(cfg.agent,
                             obs_space_num=env.observation_space.shape[0],
-                            actions_num=env.action_space.shape[0],
+                            # FIXME: feels bad
+                            actions_num=(env.action_space.high - env.action_space.low + 1).item(),
                             device_type=cfg.device_type)
 
     writer = SummaryWriter()
@@ -60,14 +65,13 @@ def main(cfg: DictConfig):
             s, a, r, n, f = buff.sample(cfg.training.batch_size,
                                         cluster_size=cfg.agent.get('batch_cluster_size', 1))
 
-            # TODO: add checkpoint saver for model
             losses = agent.train(s, a, r, n, f)
             for loss_name, loss in losses.items():
                 writer.add_scalar(f'train/{loss_name}', loss, global_step)
             global_step += 1
 
         ### Validation
-        if epoch_num % 100 == 0:
+        if epoch_num % cfg.training.val_logs_every == 0:
             rollouts = collect_rollout_num(env, cfg.validation.rollout_num, agent)
             metrics = metrics_evaluator.calculate_metrics(rollouts)
             for metric_name, metric in metrics.items():
@@ -79,6 +83,12 @@ def main(cfg: DictConfig):
                 for rollout in rollouts:
                     video = np.expand_dims(rollout.observations.transpose(0, 3, 1, 2), 0)
                     writer.add_video('val/visualization', video, epoch_num)
+                    # FIXME:Very bad from architecture point
+                    agent.viz_log(rollout, writer, epoch_num)
+
+        ### Checkpoint
+        # if epoch_num % cfg.training.save_checkpoint_every == 0:
+        #     agent.save_ckpt(epoch_num, losses)
 
 
 if __name__ == "__main__":

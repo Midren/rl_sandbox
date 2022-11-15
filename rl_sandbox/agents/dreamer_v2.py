@@ -147,7 +147,14 @@ class RSSM(nn.Module):
 
         # Use zero vector for prev_state of first
         if h_prev is None:
-            h_prev = (torch.zeros((*action.shape[:-1], self.hidden_size)), torch.zeros((*action.shape[:-1], self.latent_dim * self.latent_classes)))
+            h_prev = (torch.zeros((
+                *action.shape[:-1],
+                self.hidden_size,
+            ),
+                                  device=next(self.stoch_net.parameters()).device),
+                      torch.zeros(
+                          (*action.shape[:-1], self.latent_dim * self.latent_classes),
+                          device=next(self.stoch_net.parameters()).device))
         deter_prev, stoch_prev = h_prev
         determ, prior_stoch_dist = self.predict_next(stoch_prev,
                                                      action,
@@ -220,6 +227,7 @@ class WorldModel(nn.Module):
         self.latent_dim = latent_dim
         self.latent_classes = latent_classes
         self.cluster_size = batch_cluster_size
+        self.actions_num = actions_num
         # kl loss balancing (prior/posterior)
         self.alpha = 0.8
 
@@ -261,7 +269,8 @@ class WorldModel(nn.Module):
 
     def get_latent(self, obs: torch.Tensor, action, state):
         embed = self.encoder(obs)
-        determ, _, latent_repr_dist = self.recurrent_model(state, embed.unsqueeze(0), action)
+        determ, _, latent_repr_dist = self.recurrent_model(state, embed.unsqueeze(0),
+                                                           action)
         latent_repr = latent_repr_dist.rsample().reshape(-1, 32 * 32)
         return determ, latent_repr.unsqueeze(0)
 
@@ -273,7 +282,7 @@ class WorldModel(nn.Module):
         embed = embed.view(b // self.cluster_size, self.cluster_size, -1)
 
         obs = obs.view(-1, self.cluster_size, 3, h, w)
-        a = a.view(-1, self.cluster_size, 1)
+        a = a.view(-1, self.cluster_size, self.actions_num)
         r = r.view(-1, self.cluster_size, 1)
         f = is_finished.view(-1, self.cluster_size, 1)
 
@@ -315,7 +324,8 @@ class WorldModel(nn.Module):
             h_prev = [determ_t, posterior_stoch.unsqueeze(0)]
             latent_vars.append(posterior_stoch.detach())
 
-        loss = torch.Tensor(1)
+        # NOTE: 'aten::nonzero' inside KL divergence is not currently supported on M1 Pro MPS device
+        loss = torch.Tensor(1).to(next(self.encoder.parameters()).device)
         for l in losses.values():
             loss += l
 
@@ -325,7 +335,8 @@ class WorldModel(nn.Module):
 
         discovered_latents = torch.stack(latent_vars).reshape(
             -1, self.latent_dim * self.latent_classes)
-        return {l: val.detach() for l, val in losses.items()}, discovered_latents
+        return {l: val.detach().cpu().item()
+                for l, val in losses.items()}, discovered_latents
 
 
 class ImaginativeCritic(nn.Module):
@@ -393,7 +404,7 @@ class DreamerV2(RlAgent):
             device_type: str = 'cpu'):
 
         self._state = None
-        self._last_action = torch.zeros(actions_num)
+        self._last_action = torch.zeros(actions_num, device=device_type)
         self.actions_num = actions_num
         self.imagination_horizon = imagination_horizon
         self.cluster_size = batch_cluster_size
@@ -411,12 +422,12 @@ class DreamerV2(RlAgent):
                                      400,
                                      4,
                                      intermediate_activation=nn.ELU,
-                                     final_activation=Quantize)
-        # TODO: Leave only ImaginativeCritic and move Actor to DreamerV2
+                                     final_activation=Quantize).to(device_type)
         self.critic = ImaginativeCritic(discount_factor, critic_update_interval,
                                         critic_soft_update_fraction,
                                         critic_value_target_lambda,
-                                        latent_dim * latent_classes, actions_num)
+                                        latent_dim * latent_classes,
+                                        actions_num).to(device_type)
 
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=4e-5)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=1e-4)
@@ -439,7 +450,8 @@ class DreamerV2(RlAgent):
 
     def reset(self):
         self._state = None
-        self._last_action = torch.zeros((1, 1, self.actions_num))
+        self._last_action = torch.zeros((1, 1, self.actions_num),
+                                        device=next(self.world_model.parameters()).device)
 
     def preprocess_obs(self, obs: torch.Tensor):
         order = list(range(len(obs.shape)))
@@ -457,6 +469,41 @@ class DreamerV2(RlAgent):
 
         return np.array([self._last_action.squeeze().detach().cpu().numpy().argmax()])
 
+    def _generate_video(self, obs: Observation, init_action: Action):
+        obs = torch.from_numpy(obs.copy()).to(next(self.world_model.parameters()).device)
+        obs = self.preprocess_obs(obs).unsqueeze(0)
+
+        action = F.one_hot(self.from_np(init_action).to(torch.int64),
+                           num_classes=self.actions_num).squeeze()
+        z_0 = self.world_model.get_latent(obs, action.unsqueeze(0).unsqueeze(0), None)[1]
+        imagined_rollout = self.imagine_trajectory(z_0.squeeze())
+        zs, _, _, _, _ = zip(*imagined_rollout)
+        reconstructed_plan = []
+        for z in zs:
+            reconstructed_plan.append(
+                self.world_model.image_predictor(z).detach().numpy())
+        video_r = np.concatenate(reconstructed_plan)
+        video_r = ((video_r + 0.5) * 255.0).astype(np.uint8)
+        return video_r
+
+    def viz_log(self, rollout, logger, epoch_num):
+        init_indeces = np.random.choice(len(rollout.states) - self.imagination_horizon, 3)
+        videos_r = np.concatenate([
+            self._generate_video(obs_0.copy(), a_0) for obs_0, a_0 in zip(
+                rollout.states[init_indeces], rollout.actions[init_indeces])
+        ],
+                                  axis=3)
+
+        videos = np.concatenate([
+            rollout.states[init_idx:init_idx + self.imagination_horizon].transpose(
+                0, 3, 1, 2) for init_idx in init_indeces
+        ],
+                                axis=3)
+
+        logger.add_video('val/dreamed_rollout',
+                         np.expand_dims(np.concatenate([videos, videos_r], axis=2), 0),
+                         epoch_num)
+
     def from_np(self, arr: np.ndarray):
         return torch.from_numpy(arr).to(next(self.world_model.parameters()).device)
 
@@ -464,7 +511,8 @@ class DreamerV2(RlAgent):
               is_finished: TerminationFlags):
 
         obs = self.preprocess_obs(self.from_np(obs))
-        a = self.from_np(a)
+        a = self.from_np(a).to(torch.int64)
+        # Works incorrect
         a = F.one_hot(a, num_classes=self.actions_num).squeeze()
         r = self.from_np(r)
         next_obs = self.preprocess_obs(self.from_np(next_obs))
@@ -490,8 +538,8 @@ class DreamerV2(RlAgent):
                                                    reduction='sum')
 
             losses_ac['loss_actor_reinforce'] += 0  # unused in dm_control
-            losses_ac['loss_actor_dynamics_backprop'] += (-(1 - self.rho) * vs[-1]).mean()
-            losses_ac['loss_actor_entropy'] += -self.eta * torch.stack(
+            losses_ac['loss_actor_dynamics_backprop'] += -((1 - self.rho) * vs).mean()
+            losses_ac['loss_actor_entropy'] += self.eta * torch.stack(
                 [a.entropy() for a in action_dists[:-1]]).mean()
             losses_ac['loss_actor'] += losses_ac['loss_actor_reinforce'] + losses_ac[
                 'loss_actor_dynamics_backprop'] + losses_ac['loss_actor_entropy']
@@ -504,6 +552,20 @@ class DreamerV2(RlAgent):
         self.critic_optimizer.step()
         self.critic.update_target()
 
-        losses_ac = {l: val.detach() for l, val in losses_ac.items()}
+        losses_ac = {l: val.detach().cpu().item() for l, val in losses_ac.items()}
 
         return losses | losses_ac
+
+    def save_ckpt(self, epoch_num: int, losses: dict[str, float]):
+        torch.save(
+            {
+                'epoch': epoch_num,
+                'world_model_state_dict': self.world_model.state_dict(),
+                'world_model_optimizer_state_dict':
+                self.world_model.optimizer.state_dict(),
+                'actor_state_dict': self.actor.state_dict(),
+                'critic_state_dict': self.critic.state_dict(),
+                'actor_optimizer_state_dict': self.actor_optimizer.state_dict(),
+                'critic_optimizer_state_dict': self.critic_optimizer.state_dict(),
+                'losses': losses
+            }, f'dreamerV2-{epoch_num}-{sum(losses.values())}.ckpt')
