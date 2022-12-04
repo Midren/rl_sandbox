@@ -336,12 +336,12 @@ class ImaginativeCritic(nn.Module):
         self._update_num = 0
 
         self.critic = fc_nn_generator(latent_dim,
-                                      actions_num,
+                                      1,
                                       400,
                                       1,
                                       intermediate_activation=nn.ELU)
         self.target_critic = fc_nn_generator(latent_dim,
-                                             actions_num,
+                                             1,
                                              400,
                                              1,
                                              intermediate_activation=nn.ELU)
@@ -360,11 +360,13 @@ class ImaginativeCritic(nn.Module):
 
     def lambda_return(self, zs, rs, ts):
         v_lambdas = [self.target_critic(zs[-1])]
-        for r, z, t in zip(reversed(rs[:-1]), reversed(zs[:-1]), reversed(ts[:-1])):
-            v_lambda = r + t * self.gamma * (
-                (1 - self.lambda_) * self.target_critic(z) + self.lambda_ * v_lambdas[-1])
+        for i in range(zs.shape[0] - 2, -1, -1):
+            v_lambda = rs[i] + ts[i] * self.gamma * (
+                (1 - self.lambda_) * self.target_critic(zs[i]).detach() +
+                self.lambda_ * v_lambdas[-1])
             v_lambdas.append(v_lambda)
-        return torch.concat(list(reversed(v_lambdas)), dim=0)
+
+        return torch.stack(list(reversed(v_lambdas)))
 
 
 class DreamerV2(RlAgent):
@@ -431,19 +433,25 @@ class DreamerV2(RlAgent):
 
     def imagine_trajectory(
         self, z_0
-    ) -> list[tuple[torch.Tensor, torch.distributions.Distribution, torch.Tensor,
-                    torch.Tensor]]:
-        rollout = []
+    ) -> tuple[torch.Tensor, torch.distributions.Distribution, torch.Tensor, torch.Tensor,
+               torch.Tensor]:
         world_state = None
-        z = z_0.detach().unsqueeze(0)
+        zs, actions, next_zs, rewards, ts = [], [], [], [], []
+        z = z_0.detach()
         for _ in range(self.imagination_horizon):
             a = self.actor(z)
             world_state, next_z, reward, is_finished = self.world_model.predict_next(
                 z, a.rsample(), world_state)
-            rollout.append(
-                (z.detach(), a, next_z.detach(), reward.detach(), is_finished.detach()))
+
+            zs.append(z)
+            actions.append(a)
+            next_zs.append(next_z)
+            rewards.append(reward)
+            ts.append(is_finished)
+
             z = next_z.detach()
-        return rollout
+        return (torch.stack(zs).detach(), actions, torch.stack(next_zs).detach(), torch.stack(rewards).detach(),
+                torch.stack(ts).detach())
 
     def reset(self):
         self._state = None
@@ -488,8 +496,7 @@ class DreamerV2(RlAgent):
                                           action.unsqueeze(0).unsqueeze(0),
                                           None)[1].rsample().reshape(-1,
                                                                      32 * 32).unsqueeze(0)
-        imagined_rollout = self.imagine_trajectory(z_0.squeeze())
-        zs, _, _, _, _ = zip(*imagined_rollout)
+        zs, _, _, _, _ = self.imagine_trajectory(z_0)
         reconstructed_plan = []
         for z in zs:
             reconstructed_plan.append(
@@ -512,12 +519,13 @@ class DreamerV2(RlAgent):
         ],
                                 axis=3)
         videos_comparison = np.expand_dims(np.concatenate([videos, videos_r], axis=2), 0)
-        latent_hist = (self._latent_probs/self._stored_steps*255.0).detach().cpu().numpy().reshape(-1, 32, 32)
-        action_hist = (self._action_probs/self._stored_steps).detach().cpu().numpy()
+        latent_hist = (self._latent_probs / self._stored_steps *
+                       255.0).detach().cpu().numpy().reshape(-1, 32, 32)
+        action_hist = (self._action_probs / self._stored_steps).detach().cpu().numpy()
 
         # logger.add_histogram('val/action_probs', action_hist, epoch_num)
         fig = plt.Figure()
-        ax = fig.add_axes([0,0,1,1])
+        ax = fig.add_axes([0, 0, 1, 1])
         ax.bar(np.arange(self.actions_num), action_hist)
         logger.add_figure('val/action_probs', fig, epoch_num)
         logger.add_image('val/latent_probs', latent_hist, epoch_num)
@@ -555,23 +563,20 @@ class DreamerV2(RlAgent):
         losses_ac = defaultdict(
             lambda: torch.zeros(1).to(next(self.critic.parameters()).device))
 
-        for z_0 in initial_states:
-            rollout = self.imagine_trajectory(z_0)
-            zs, action_dists, next_zs, rewards, terminal_flags = zip(*rollout)
-            vs = self.critic.lambda_return(next_zs, rewards, terminal_flags)
+        zs, action_dists, next_zs, rewards, terminal_flags = self.imagine_trajectory(
+            initial_states)
+        vs = self.critic.lambda_return(next_zs, rewards, terminal_flags)
 
-            losses_ac['loss_critic'] += F.mse_loss(self.critic.estimate_value(
-                torch.stack(next_zs).squeeze(1)),
-                                                   vs.detach(),
-                                                   reduction='sum')
-
-            losses_ac['loss_actor_reinforce'] += 0  # unused in dm_control
-            losses_ac['loss_actor_dynamics_backprop'] += -(
-                (1 - self.rho) * vs[:-1]).mean()
-            losses_ac['loss_actor_entropy'] += self.eta * torch.stack(
-                [a.entropy() for a in action_dists[:-1]]).mean()
-            losses_ac['loss_actor'] += losses_ac['loss_actor_reinforce'] + losses_ac[
-                'loss_actor_dynamics_backprop'] + losses_ac['loss_actor_entropy']
+        losses_ac['loss_critic'] = F.mse_loss(self.critic.estimate_value(next_zs),
+                                              vs.detach(),
+                                              reduction='sum') / zs.shape[1]
+        losses_ac['loss_actor_reinforce'] += 0  # unused in dm_control
+        losses_ac['loss_actor_dynamics_backprop'] = -(
+            (1 - self.rho) * vs).sum() / zs.shape[1]
+        losses_ac['loss_actor_entropy'] += self.eta * torch.stack(
+            [a.entropy() for a in action_dists[:-1]]).sum() / zs.shape[1]
+        losses_ac['loss_actor'] += losses_ac['loss_actor_reinforce'] + losses_ac[
+            'loss_actor_dynamics_backprop'] #+ losses_ac['loss_actor_entropy']
 
         self.actor_optimizer.zero_grad()
         self.critic_optimizer.zero_grad()

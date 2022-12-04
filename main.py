@@ -87,9 +87,10 @@ def main(cfg: DictConfig):
                     agent.viz_log(rollout, writer, epoch_num)
 
         ### Checkpoint
-        # if epoch_num % cfg.training.save_checkpoint_every == 0:
-        #     agent.save_ckpt(epoch_num, losses)
+        if epoch_num % cfg.training.save_checkpoint_every == 0:
+            agent.save_ckpt(epoch_num, losses)
 
 
 if __name__ == "__main__":
     main()
+
