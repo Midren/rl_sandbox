@@ -42,9 +42,8 @@ class DebugShapeLayer(nn.Module):
 class Quantize(nn.Module):
 
     def forward(self, logits):
-        dist = torch.distributions.one_hot_categorical.OneHotCategoricalStraightThrough(
+        return torch.distributions.one_hot_categorical.OneHotCategoricalStraightThrough(
             logits=logits)
-        return dist
 
 
 class RSSM(nn.Module):
@@ -450,8 +449,8 @@ class DreamerV2(RlAgent):
             ts.append(is_finished)
 
             z = next_z.detach()
-        return (torch.stack(zs).detach(), actions, torch.stack(next_zs).detach(), torch.stack(rewards).detach(),
-                torch.stack(ts).detach())
+        return (torch.stack(zs), actions, torch.stack(next_zs),
+                torch.stack(rewards).detach(), torch.stack(ts).detach())
 
     def reset(self):
         self._state = None
@@ -497,10 +496,9 @@ class DreamerV2(RlAgent):
                                           None)[1].rsample().reshape(-1,
                                                                      32 * 32).unsqueeze(0)
         zs, _, _, _, _ = self.imagine_trajectory(z_0)
-        reconstructed_plan = []
-        for z in zs:
-            reconstructed_plan.append(
-                self.world_model.image_predictor(z).detach().numpy())
+        reconstructed_plan = [
+            self.world_model.image_predictor(z).detach().numpy() for z in zs
+        ]
         video_r = np.concatenate(reconstructed_plan)
         video_r = ((video_r + 0.5) * 255.0).astype(np.uint8)
         return video_r
@@ -573,10 +571,10 @@ class DreamerV2(RlAgent):
         losses_ac['loss_actor_reinforce'] += 0  # unused in dm_control
         losses_ac['loss_actor_dynamics_backprop'] = -(
             (1 - self.rho) * vs).sum() / zs.shape[1]
-        losses_ac['loss_actor_entropy'] += self.eta * torch.stack(
+        losses_ac['loss_actor_entropy'] = -self.eta * torch.stack(
             [a.entropy() for a in action_dists[:-1]]).sum() / zs.shape[1]
         losses_ac['loss_actor'] += losses_ac['loss_actor_reinforce'] + losses_ac[
-            'loss_actor_dynamics_backprop'] #+ losses_ac['loss_actor_entropy']
+            'loss_actor_dynamics_backprop'] + losses_ac['loss_actor_entropy']
 
         self.actor_optimizer.zero_grad()
         self.critic_optimizer.zero_grad()
