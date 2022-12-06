@@ -314,7 +314,7 @@ class WorldModel(nn.Module):
 
             x_r = self.image_predictor(torch.concat([determ_t.squeeze(0), posterior_stoch], dim=1))
 
-            losses['loss_reconstruction'] = nn.functional.mse_loss(x_t, x_r)
+            losses['loss_reconstruction'] += nn.functional.mse_loss(x_t, x_r)
             losses['loss_reward_pred'] += F.mse_loss(r_t, r_t_pred)
             losses['loss_discount_pred'] += F.cross_entropy(f_t.type(torch.float32),
                                                             f_t_pred)
@@ -523,8 +523,8 @@ class DreamerV2(RlAgent):
         ],
                                 axis=3)
         videos_comparison = np.expand_dims(np.concatenate([videos, videos_r], axis=2), 0)
-        latent_hist = (self._latent_probs / self._stored_steps *
-                       255.0).detach().cpu().numpy().reshape(-1, 32, 32)
+        latent_hist = (self._latent_probs / self._stored_steps).detach().cpu().numpy()
+        latent_hist = ((latent_hist / latent_hist.max() * 255.0 )).astype(np.uint8)
         action_hist = (self._action_probs / self._stored_steps).detach().cpu().numpy()
 
         # logger.add_histogram('val/action_probs', action_hist, epoch_num)
@@ -532,8 +532,8 @@ class DreamerV2(RlAgent):
         ax = fig.add_axes([0, 0, 1, 1])
         ax.bar(np.arange(self.actions_num), action_hist)
         logger.add_figure('val/action_probs', fig, epoch_num)
-        logger.add_image('val/latent_probs', latent_hist, epoch_num)
-        logger.add_image('val/latent_probs_sorted', np.sort(latent_hist, axis=2), epoch_num)
+        logger.add_image('val/latent_probs', latent_hist, epoch_num, dataformats='HW')
+        logger.add_image('val/latent_probs_sorted', np.sort(latent_hist, axis=1), epoch_num, dataformats='HW')
         logger.add_video('val/dreamed_rollout', videos_comparison, epoch_num)
 
     def from_np(self, arr: np.ndarray):
