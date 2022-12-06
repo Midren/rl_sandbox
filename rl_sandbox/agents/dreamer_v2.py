@@ -81,16 +81,19 @@ class RSSM(nn.Module):
             nn.Linear(latent_dim * latent_classes + actions_num,
                       hidden_size),  # Dreamer 'img_in'
             nn.LayerNorm(hidden_size),
+            nn.ELU(inplace=True)
         )
         self.determ_recurrent = nn.GRU(input_size=hidden_size,
                                        hidden_size=hidden_size)  # Dreamer gru '_cell'
 
         # Calculate stochastic state from prior embed
         # shared between all ensemble models
+        # FIXME: check whether it is trully correct
         self.ensemble_prior_estimator = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(hidden_size, hidden_size),  # Dreamer 'img_out_{k}'
                 nn.LayerNorm(hidden_size),
+                nn.ELU(inplace=True),
                 nn.Linear(hidden_size,
                           latent_dim * self.latent_classes),  # Dreamer 'img_dist_{k}'
                 View((-1, latent_dim, self.latent_classes)),
@@ -101,10 +104,9 @@ class RSSM(nn.Module):
         # FIXME: very bad magic number
         img_sz = 4 * 384  # 384*2x2
         self.stoch_net = nn.Sequential(
-            nn.Linear(hidden_size + img_sz, hidden_size),
+            nn.Linear(hidden_size + img_sz, hidden_size), # Dreamer 'obs_out'
             nn.LayerNorm(hidden_size),
-            nn.Linear(hidden_size, hidden_size),  # Dreamer 'obs_out'
-            nn.LayerNorm(hidden_size),
+            nn.ELU(inplace=True),
             nn.Linear(hidden_size,
                       latent_dim * self.latent_classes),  # Dreamer 'obs_dist'
             View((-1, latent_dim, self.latent_classes)),
@@ -116,18 +118,20 @@ class RSSM(nn.Module):
         dists_per_model = [model(prev_determ) for model in self.ensemble_prior_estimator]
         # NOTE: Maybe something smarter can be used instead of
         #       taking only one random between all ensembles
+        # FIXME: temporary use the same model
         idx = torch.randint(0, self.ensemble_num, ())
-        return dists_per_model[idx]
+        return dists_per_model[0]
 
     def predict_next(self,
                      stoch_latent,
                      action,
                      deter_state: t.Optional[torch.Tensor] = None):
+        # FIXME: Move outside of rssm to omit checking
         if deter_state is None:
             deter_state = torch.zeros(*stoch_latent.shape[:2], self.hidden_size).to(
                 next(self.stoch_net.parameters()).device)
         x = self.pre_determ_recurrent(torch.concat([stoch_latent, action], dim=2))
-        _, determ = self.determ_recurrent(x, deter_state)
+        _, determ = self.determ_recurrent(x, h_0=deter_state)
 
         # used for KL divergence
         predicted_stoch_latent = self.estimate_stochastic_latent(determ)
@@ -145,7 +149,8 @@ class RSSM(nn.Module):
             Returns 'h_next' <- the next next of the world
         """
 
-        # Use zero vector for prev_state of first
+        # FIXME: Use zero vector for prev_state of first
+        # Move outside of rssm to omit checking
         if h_prev is None:
             h_prev = (torch.zeros((
                 *action.shape[:-1],
@@ -189,12 +194,12 @@ class Encoder(nn.Module):
 
 class Decoder(nn.Module):
 
-    def __init__(self, kernel_sizes=[5, 5, 6, 6]):
+    def __init__(self, input_size, kernel_sizes=[5, 5, 6, 6]):
         super().__init__()
         layers = []
         self.channel_step = 48
         # 2**(len(kernel_sizes)-1)*channel_step
-        self.convin = nn.Linear(32 * 32, 32 * self.channel_step)
+        self.convin = nn.Linear(input_size, 32 * self.channel_step)
 
         in_channels = 32 * self.channel_step  #2**(len(kernel_sizes) - 1) * self.channel_step
         for i, k in enumerate(kernel_sizes):
@@ -236,7 +241,7 @@ class WorldModel(nn.Module):
                                     actions_num,
                                     latent_classes=latent_classes)
         self.encoder = Encoder()
-        self.image_predictor = Decoder()
+        self.image_predictor = Decoder(rssm_dim + latent_dim * latent_classes)
         self.reward_predictor = fc_nn_generator(rssm_dim + latent_dim * latent_classes,
                                                 1,
                                                 hidden_size=400,
@@ -302,11 +307,11 @@ class WorldModel(nn.Module):
                 -1, self.latent_dim * self.latent_classes)
 
             r_t_pred = self.reward_predictor(
-                torch.concat([determ_t.squeeze(0), posterior_stoch], dim=1))
+                torch.concat([determ_t.squeeze(0), posterior_stoch], dim=1).detach())
             f_t_pred = self.discount_predictor(
                 torch.concat([determ_t.squeeze(0), posterior_stoch], dim=1))
 
-            x_r = self.image_predictor(posterior_stoch)
+            x_r = self.image_predictor([determ_t.squeeze(0), posterior_stoch])
 
             losses['loss_reconstruction'] = nn.functional.mse_loss(x_t, x_r)
             losses['loss_reward_pred'] += F.mse_loss(r_t, r_t_pred)
