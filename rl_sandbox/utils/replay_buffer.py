@@ -29,7 +29,7 @@ class Rollout:
 # TODO: make buffer concurrent-friendly
 class ReplayBuffer:
 
-    def __init__(self, max_len=2_000):
+    def __init__(self, max_len=2e5):
         self.rollouts: deque[Rollout] = deque()
         self.rollouts_len: deque[int] = deque()
         self.curr_rollout = None
@@ -83,24 +83,35 @@ class ReplayBuffer:
         seq_num = batch_size // cluster_size
         # NOTE: constant creation of numpy arrays from self.rollout_len seems terrible for me
         s, a, r, n, t = [], [], [], [], []
-        r_indeces = np.random.choice(len(self.rollouts),
+        do_add_curr = self.curr_rollout is not None and len(self.curr_rollout.states) > cluster_size
+        r_indeces = np.random.choice(len(self.rollouts) + int(do_add_curr),
                                      seq_num,
-                                     p=np.array(self.rollouts_len) / self.total_num)
+                                     p=np.array(self.rollouts_len + deque([len(self.curr_rollout.states)] if do_add_curr else [])) / (self.total_num + int(do_add_curr)*len(self.curr_rollout.states)))
+        s_indeces = []
         for r_idx in r_indeces:
-            # NOTE: maybe just no add such small rollouts to buffer
-            assert self.rollouts_len[r_idx] - cluster_size + 1 > 0, "Rollout it too small"
-            s_idx = np.random.choice(self.rollouts_len[r_idx] - cluster_size + 1, 1).item()
+            if r_idx != len(self.rollouts):
+                rollout, r_len = self.rollouts[r_idx], self.rollouts_len[r_idx]
+            else:
+                # -1 because we don't have next_state on terminal
+                rollout, r_len = self.curr_rollout, len(self.curr_rollout.states) - 1
 
-            s.append(self.rollouts[r_idx].states[s_idx:s_idx + cluster_size])
-            a.append(self.rollouts[r_idx].actions[s_idx:s_idx + cluster_size])
-            r.append(self.rollouts[r_idx].rewards[s_idx:s_idx + cluster_size])
-            t.append(self.rollouts[r_idx].is_finished[s_idx:s_idx + cluster_size])
-            if s_idx != self.rollouts_len[r_idx] - cluster_size:
-                n.append(self.rollouts[r_idx].states[s_idx+1:s_idx+1 + cluster_size])
+            # NOTE: maybe just not add such small rollouts to buffer
+            assert r_len > cluster_size - 1, "Rollout it too small"
+            s_idx = np.random.choice(r_len - cluster_size + 1, 1).item()
+            s_indeces.append(s_idx)
+
+            if r_idx == len(self.rollouts):
+                r_len += 1
+
+            s.append(rollout.states[s_idx:s_idx + cluster_size])
+            a.append(rollout.actions[s_idx:s_idx + cluster_size])
+            r.append(rollout.rewards[s_idx:s_idx + cluster_size])
+            t.append(rollout.is_finished[s_idx:s_idx + cluster_size])
+            if s_idx != r_len - cluster_size:
+                n.append(rollout.states[s_idx+1:s_idx+1 + cluster_size])
             else:
                 if cluster_size != 1:
-                    n.append(self.rollouts[r_idx].states[s_idx+1:s_idx+1 + cluster_size - 1])
-                n.append(self.rollouts[r_idx].next_states)
-
-        return (np.concatenate(s), np.concatenate(a), np.concatenate(r),
+                    n.append(rollout.states[s_idx+1:s_idx+1 + cluster_size - 1])
+                n.append(rollout.next_states)
+        return (np.concatenate(s), np.concatenate(a), np.concatenate(r, dtype=np.float32),
             np.concatenate(n), np.concatenate(t))

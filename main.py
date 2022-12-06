@@ -6,10 +6,11 @@ from tqdm import tqdm
 from unpackable import unpack
 
 from rl_sandbox.agents.random_agent import RandomAgent
+from rl_sandbox.agents.explorative_agent import ExplorativeAgent
 from rl_sandbox.metrics import MetricsEvaluator
 from rl_sandbox.utils.env import Env
 from rl_sandbox.utils.replay_buffer import ReplayBuffer
-from rl_sandbox.utils.rollout_generation import (collect_rollout_num,
+from rl_sandbox.utils.rollout_generation import (collect_rollout, collect_rollout_num, iter_rollout,
                                                  fillup_replay_buffer)
 from rl_sandbox.utils.schedulers import LinearScheduler
 
@@ -29,46 +30,40 @@ def main(cfg: DictConfig):
 
     # TODO: Implement smarter techniques for exploration
     #       (Plan2Explore, etc)
-    exploration_agent = RandomAgent(env)
-    agent = hydra.utils.instantiate(cfg.agent,
+
+    policy_agent = hydra.utils.instantiate(cfg.agent,
                             obs_space_num=env.observation_space.shape[0],
                             # FIXME: feels bad
                             actions_num=(env.action_space.high - env.action_space.low + 1).item(),
                             device_type=cfg.device_type)
-
+    agent = ExplorativeAgent(
+               policy_agent,
+                # TODO: For dreamer, add noise for sampling instead
+                # of just random actions
+               RandomAgent(env),
+               LinearScheduler(0.9, 0.01, 5_000))
     writer = SummaryWriter()
 
-    scheduler = LinearScheduler(0.9, 0.01, 5_000)
-
     global_step = 0
-    for epoch_num in tqdm(range(cfg.training.epochs)):
+    pbar = tqdm(total=cfg.training.epochs*200)
+    for epoch_num in range(cfg.training.epochs):
         ### Training and exploration
 
-        state, _, _ = unpack(env.reset())
-        agent.reset()
+        # TODO: add buffer end prioritarization
+        for s, a, r, n, f, _ in iter_rollout(env, agent):
+            buff.add_sample(s, a, r, n, f)
 
-        terminated = False
-        while not terminated:
             if global_step % cfg.training.gradient_steps_per_step == 0:
-                # TODO: For dreamer, add noise for sampling
-                if np.random.random() > scheduler.step():
-                    action = exploration_agent.get_action(state)
-                else:
-                    action = agent.get_action(state)
+                # NOTE: unintuitive that batch_size is now number of total
+                #       samples, but not amount of sequences for recurrent model
+                s, a, r, n, f = buff.sample(cfg.training.batch_size,
+                                            cluster_size=cfg.agent.get('batch_cluster_size', 1))
 
-                new_state, reward, terminated = unpack(env.step(action))
-
-                buff.add_sample(state, action, reward, new_state, terminated)
-
-            # NOTE: unintuitive that batch_size is now number of total
-            #       samples, but not amount of sequences for recurrent model
-            s, a, r, n, f = buff.sample(cfg.training.batch_size,
-                                        cluster_size=cfg.agent.get('batch_cluster_size', 1))
-
-            losses = agent.train(s, a, r, n, f)
-            for loss_name, loss in losses.items():
-                writer.add_scalar(f'train/{loss_name}', loss, global_step)
+                losses = agent.train(s, a, r, n, f)
+                for loss_name, loss in losses.items():
+                    writer.add_scalar(f'train/{loss_name}', loss, global_step)
             global_step += 1
+            pbar.update(1)
 
         ### Validation
         if epoch_num % cfg.training.val_logs_every == 0:
@@ -83,8 +78,8 @@ def main(cfg: DictConfig):
                 for rollout in rollouts:
                     video = np.expand_dims(rollout.observations.transpose(0, 3, 1, 2), 0)
                     writer.add_video('val/visualization', video, epoch_num)
-                    # FIXME:Very bad from architecture point
-                    agent.viz_log(rollout, writer, epoch_num)
+                    # FIXME: Very bad from architecture point
+                    agent.policy_ag.viz_log(rollout, writer, epoch_num)
 
         ### Checkpoint
         if epoch_num % cfg.training.save_checkpoint_every == 0:

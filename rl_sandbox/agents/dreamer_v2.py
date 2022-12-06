@@ -131,7 +131,7 @@ class RSSM(nn.Module):
             deter_state = torch.zeros(*stoch_latent.shape[:2], self.hidden_size).to(
                 next(self.stoch_net.parameters()).device)
         x = self.pre_determ_recurrent(torch.concat([stoch_latent, action], dim=2))
-        _, determ = self.determ_recurrent(x, h_0=deter_state)
+        _, determ = self.determ_recurrent(x, deter_state)
 
         # used for KL divergence
         predicted_stoch_latent = self.estimate_stochastic_latent(determ)
@@ -290,9 +290,10 @@ class WorldModel(nn.Module):
         def KL(dist1, dist2):
             KL_ = torch.distributions.kl_divergence
             Dist = torch.distributions.OneHotCategoricalStraightThrough
-            return self.kl_beta * (
-                self.alpha * KL_(dist1, Dist(logits=dist2.logits.detach())).mean() +
-                (1 - self.alpha) * KL_(Dist(logits=dist1.logits.detach()), dist2).mean())
+            one = torch.ones(1,device=next(self.parameters()).device)
+            kl_lhs = torch.maximum(KL_(Dist(logits=dist2.logits.detach()), dist1), one)
+            kl_rhs = torch.maximum(KL_(dist2, Dist(logits=dist1.logits.detach())), one)
+            return self.kl_beta * (self.alpha * kl_lhs.mean()+ (1 - self.alpha) * kl_rhs.mean())
 
         latent_vars = []
 
@@ -311,7 +312,7 @@ class WorldModel(nn.Module):
             f_t_pred = self.discount_predictor(
                 torch.concat([determ_t.squeeze(0), posterior_stoch], dim=1))
 
-            x_r = self.image_predictor([determ_t.squeeze(0), posterior_stoch])
+            x_r = self.image_predictor(torch.concat([determ_t.squeeze(0), posterior_stoch], dim=1))
 
             losses['loss_reconstruction'] = nn.functional.mse_loss(x_t, x_r)
             losses['loss_reward_pred'] += F.mse_loss(r_t, r_t_pred)
@@ -409,6 +410,8 @@ class DreamerV2(RlAgent):
         self.world_model = WorldModel(batch_cluster_size, latent_dim, latent_classes,
                                       rssm_dim, actions_num, kl_loss_scale,
                                       kl_loss_balancing).to(device_type)
+        # TODO: final activation should depend whether agent
+        # action space in one hot or identity if real-valued
         self.actor = fc_nn_generator(latent_dim * latent_classes,
                                      actions_num,
                                      400,
@@ -440,7 +443,7 @@ class DreamerV2(RlAgent):
     ) -> tuple[torch.Tensor, torch.distributions.Distribution, torch.Tensor, torch.Tensor,
                torch.Tensor]:
         world_state = None
-        zs, actions, next_zs, rewards, ts = [], [], [], [], []
+        zs, actions, next_zs, rewards, ts, determs = [], [], [], [], [], []
         z = z_0.detach()
         for _ in range(self.imagination_horizon):
             a = self.actor(z)
@@ -452,17 +455,18 @@ class DreamerV2(RlAgent):
             next_zs.append(next_z)
             rewards.append(reward)
             ts.append(is_finished)
+            determs.append(world_state[0])
 
             z = next_z.detach()
         return (torch.stack(zs), actions, torch.stack(next_zs),
-                torch.stack(rewards).detach(), torch.stack(ts).detach())
+                torch.stack(rewards).detach(), torch.stack(ts).detach(), torch.stack(determs))
 
     def reset(self):
         self._state = None
         self._last_action = torch.zeros((1, 1, self.actions_num),
                                         device=next(self.world_model.parameters()).device)
-        self._latent_probs = torch.zeros((32, 32))
-        self._action_probs = torch.zeros((self.actions_num))
+        self._latent_probs = torch.zeros((32, 32), device=next(self.world_model.parameters()).device)
+        self._action_probs = torch.zeros((self.actions_num), device=next(self.world_model.parameters()).device)
         self._stored_steps = 0
 
     def preprocess_obs(self, obs: torch.Tensor):
@@ -500,11 +504,8 @@ class DreamerV2(RlAgent):
                                           action.unsqueeze(0).unsqueeze(0),
                                           None)[1].rsample().reshape(-1,
                                                                      32 * 32).unsqueeze(0)
-        zs, _, _, _, _ = self.imagine_trajectory(z_0)
-        reconstructed_plan = [
-            self.world_model.image_predictor(z).detach().numpy() for z in zs
-        ]
-        video_r = np.concatenate(reconstructed_plan)
+        zs, _, _, _, _, determs = self.imagine_trajectory(z_0.squeeze(0))
+        video_r = self.world_model.image_predictor(torch.concat([determs, zs], dim=2)).cpu().detach().numpy()
         video_r = ((video_r + 0.5) * 255.0).astype(np.uint8)
         return video_r
 
@@ -532,6 +533,7 @@ class DreamerV2(RlAgent):
         ax.bar(np.arange(self.actions_num), action_hist)
         logger.add_figure('val/action_probs', fig, epoch_num)
         logger.add_image('val/latent_probs', latent_hist, epoch_num)
+        logger.add_image('val/latent_probs_sorted', np.sort(latent_hist, axis=2), epoch_num)
         logger.add_video('val/dreamed_rollout', videos_comparison, epoch_num)
 
     def from_np(self, arr: np.ndarray):
@@ -566,11 +568,11 @@ class DreamerV2(RlAgent):
         losses_ac = defaultdict(
             lambda: torch.zeros(1).to(next(self.critic.parameters()).device))
 
-        zs, action_dists, next_zs, rewards, terminal_flags = self.imagine_trajectory(
+        zs, action_dists, next_zs, rewards, terminal_flags, _ = self.imagine_trajectory(
             initial_states)
         vs = self.critic.lambda_return(next_zs, rewards, terminal_flags)
 
-        losses_ac['loss_critic'] = F.mse_loss(self.critic.estimate_value(next_zs),
+        losses_ac['loss_critic'] = F.mse_loss(self.critic.estimate_value(next_zs.detach()),
                                               vs.detach(),
                                               reduction='sum') / zs.shape[1]
         losses_ac['loss_actor_reinforce'] += 0  # unused in dm_control

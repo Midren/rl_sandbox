@@ -1,7 +1,7 @@
 from typing import Any
 from abc import ABCMeta, abstractmethod
 
-from rl_sandbox.utils.replay_buffer import Action, State, States, Actions, Rewards
+from rl_sandbox.utils.replay_buffer import Action, State, States, Actions, Rewards, TerminationFlags
 
 class RlAgent(metaclass=ABCMeta):
     @abstractmethod
@@ -9,7 +9,7 @@ class RlAgent(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def train(self, s: States, a: Actions, r: Rewards, next: States) -> dict[str, Any]:
+    def train(self, s: States, a: Actions, r: Rewards, next: States, is_finished: TerminationFlags) -> dict[str, Any]:
         """
         Return dict with losses for logging
         """

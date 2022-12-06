@@ -15,7 +15,7 @@ class RandomAgent(RlAgent):
         return self.action_space.sample()
 
     def train(self, s: States, a: Actions, r: Rewards, next: States, is_finished: TerminationFlags):
-        pass
+        return dict()
 
     def save_ckpt(self, epoch_num: int, losses: dict[str, float]):
         pass

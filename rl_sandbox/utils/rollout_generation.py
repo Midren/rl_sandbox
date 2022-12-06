@@ -4,21 +4,14 @@ import numpy as np
 from unpackable import unpack
 
 from rl_sandbox.agents.random_agent import RandomAgent
+from rl_sandbox.agents.rl_agent import RlAgent
 from rl_sandbox.utils.env import Env
 from rl_sandbox.utils.replay_buffer import ReplayBuffer, Rollout
+from rl_sandbox.utils.replay_buffer import (Action, State, Observation)
 
-
-# FIXME: whole function duplicates a lot of code from main.py
-def collect_rollout(env: Env,
-                    agent: t.Optional[t.Any] = None,
-                    collect_obs: bool = False
-                    ) -> Rollout:
-
-    s, a, r, n, f, o = [], [], [], [], [], []
-
-    if agent is None:
-        agent = RandomAgent(env)
-
+def iter_rollout(env: Env,
+                 agent: RlAgent,
+                 collect_obs: bool = False) -> t.Generator[tuple[State, Action, float, State, bool, t.Optional[Observation]], None, None]:
     state, _, terminated = unpack(env.reset())
     agent.reset()
 
@@ -27,6 +20,22 @@ def collect_rollout(env: Env,
 
         new_state, reward, terminated = unpack(env.step(action))
 
+        # FIXME: will break for non-DM
+        obs = env.render() if collect_obs else None
+        # if collect_obs and isinstance(env, dmEnv):
+        yield state, action, reward, new_state, terminated, obs
+        state = new_state
+
+def collect_rollout(env: Env,
+                    agent: t.Optional[RlAgent] = None,
+                    collect_obs: bool = False
+                    ) -> Rollout:
+    s, a, r, n, f, o = [], [], [], [], [], []
+
+    if agent is None:
+        agent = RandomAgent(env)
+
+    for state, action, reward, new_state, terminated, obs in iter_rollout(env, agent, collect_obs):
         s.append(state)
         a.append(action)
         r.append(reward)
@@ -35,11 +44,8 @@ def collect_rollout(env: Env,
 
         # FIXME: will break for non-DM
         if collect_obs:
-            o.append(env.render())
-        # if collect_obs and isinstance(env, dmEnv):
-        state = new_state
+            o.append(obs)
 
-    obs = None
     # match env:
     #     case gym.Env():
     #         obs = np.stack(list(env.render())) if obs_res is not None else None

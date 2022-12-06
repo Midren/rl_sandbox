@@ -98,15 +98,12 @@ class Env(metaclass=ABCMeta):
             self.ac_trans.append(t)
 
     def step(self, action: Action) -> EnvStepResult:
-        action = action.copy()
         for t in reversed(self.ac_trans):
             action = t.transform_action(action)
-        for _ in range(self.repeat_action_num):
-            res = self._step(action)
-        return res
+        return self._step(action, self.repeat_action_num)
 
     @abstractmethod
-    def _step(self, action: Action) -> EnvStepResult:
+    def _step(self, action: Action, repeat_num: int = 1) -> EnvStepResult:
         pass
 
     @abstractmethod
@@ -170,7 +167,7 @@ class DmEnv(Env):
         super().__init__(run_on_pixels, obs_res, repeat_action_num, transforms)
 
     def render(self):
-        return self.env.physics.render(*self.obs_res, camera_id=0)
+        return self.env.physics.render(*self.obs_res)
 
     def _uncode_ts(self, ts: TimeStep) -> EnvStepResult:
         if self.run_on_pixels:
@@ -180,9 +177,19 @@ class DmEnv(Env):
             state = np.concatenate([state[s] for s in state], dtype=np.float32)
         return EnvStepResult(state, ts.reward, ts.last())
 
-    def _step(self, action: Action) -> EnvStepResult:
-        # TODO: add action repeat to speed up DMC simulations
-        return self._uncode_ts(self.env.step(action))
+    def _step(self, action: Action, repeat_num: int) -> EnvStepResult:
+        rew = 0
+        for _ in range(repeat_num - 1):
+            ts =  self.env.step(action)
+            rew += ts.reward or 0.0
+            if ts.last():
+                break
+        if repeat_num == 1 or not ts.last():
+            env_res = self._uncode_ts(self.env.step(action))
+        else:
+            env_res = ts
+        env_res.reward = np.tanh(rew + (env_res.reward or 0.0))
+        return env_res
 
     def reset(self) -> EnvStepResult:
         return self._uncode_ts(self.env.reset())
