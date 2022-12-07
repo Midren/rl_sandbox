@@ -135,7 +135,7 @@ class RSSM(nn.Module):
 
         # used for KL divergence
         predicted_stoch_latent = self.estimate_stochastic_latent(determ)
-        return deter_state, predicted_stoch_latent
+        return determ, predicted_stoch_latent
 
     def update_current(self, determ, embed):  # Dreamer 'obs_out'
         return self.stoch_net(torch.concat([determ, embed], dim=2))
@@ -318,6 +318,7 @@ class WorldModel(nn.Module):
             losses['loss_reward_pred'] += F.mse_loss(r_t, r_t_pred)
             losses['loss_discount_pred'] += F.cross_entropy(f_t.type(torch.float32),
                                                             f_t_pred)
+            # NOTE: entropy can be added as metric
             losses['loss_kl_reg'] += KL(prior_stoch_dist, posterior_stoch_dist)
 
             h_prev = [determ_t, posterior_stoch.unsqueeze(0)]
@@ -470,6 +471,7 @@ class DreamerV2(RlAgent):
         self._stored_steps = 0
 
     def preprocess_obs(self, obs: torch.Tensor):
+        # FIXME: move to dataloader in replay buffer
         order = list(range(len(obs.shape)))
         # Swap channel from last to 3 from last
         order = order[:-3] + [order[-1]] + order[-3:-1]
@@ -537,7 +539,8 @@ class DreamerV2(RlAgent):
         logger.add_video('val/dreamed_rollout', videos_comparison, epoch_num)
 
     def from_np(self, arr: np.ndarray):
-        return torch.from_numpy(arr).to(next(self.world_model.parameters()).device)
+        arr = torch.from_numpy(arr) if isinstance(arr, np.ndarray) else arr
+        return arr.to(next(self.world_model.parameters()).device, non_blocking=True)
 
     def train(self, obs: Observations, a: Actions, r: Rewards, next_obs: Observations,
               is_finished: TerminationFlags):

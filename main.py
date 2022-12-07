@@ -3,13 +3,14 @@ import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.tensorboard.writer import SummaryWriter
 from tqdm import tqdm
-from unpackable import unpack
+from pathlib import Path
 
 from rl_sandbox.agents.random_agent import RandomAgent
 from rl_sandbox.agents.explorative_agent import ExplorativeAgent
 from rl_sandbox.metrics import MetricsEvaluator
 from rl_sandbox.utils.env import Env
-from rl_sandbox.utils.replay_buffer import ReplayBuffer
+# from rl_sandbox.utils.replay_buffer import ReplayBuffer
+from rl_sandbox.utils.persistent_replay_buffer import PersistentReplayBuffer
 from rl_sandbox.utils.rollout_generation import (collect_rollout, collect_rollout_num, iter_rollout,
                                                  fillup_replay_buffer)
 from rl_sandbox.utils.schedulers import LinearScheduler
@@ -23,7 +24,7 @@ def main(cfg: DictConfig):
 
     # TODO: add replay buffer implementation, which stores rollouts
     #       on disk
-    buff = ReplayBuffer()
+    buff = PersistentReplayBuffer(Path('rollouts/'))
     fillup_replay_buffer(env, buff, cfg.training.batch_size)
 
     metrics_evaluator = MetricsEvaluator()
@@ -68,6 +69,7 @@ def main(cfg: DictConfig):
         ### Validation
         if epoch_num % cfg.training.val_logs_every == 0:
             rollouts = collect_rollout_num(env, cfg.validation.rollout_num, agent)
+            # TODO: make logs visualization in separate process
             metrics = metrics_evaluator.calculate_metrics(rollouts)
             for metric_name, metric in metrics.items():
                 writer.add_scalar(f'val/{metric_name}', metric, epoch_num)
