@@ -25,6 +25,8 @@ class Rollout:
     is_finished: TerminationFlags
     observations: t.Optional[Observations] = None
 
+    def __len__(self):
+        return len(self.states)
 
 # TODO: make buffer concurrent-friendly
 class ReplayBuffer:
