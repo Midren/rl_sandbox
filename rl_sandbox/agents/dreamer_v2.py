@@ -470,7 +470,8 @@ class DreamerV2(RlAgent):
         self._action_probs = torch.zeros((self.actions_num), device=next(self.world_model.parameters()).device)
         self._stored_steps = 0
 
-    def preprocess_obs(self, obs: torch.Tensor):
+    @staticmethod
+    def preprocess_obs(obs: torch.Tensor):
         # FIXME: move to dataloader in replay buffer
         order = list(range(len(obs.shape)))
         # Swap channel from last to 3 from last

@@ -51,7 +51,7 @@ def main(cfg: DictConfig):
         ### Training and exploration
 
         # TODO: add buffer end prioritarization
-        for s, a, r, n, f, _ in iter_rollout(env, agent):
+        for s, a, r, n, f, _ in iter_rollout_async(env, agent):
             buff.add_sample(s, a, r, n, f)
 
             if global_step % cfg.training.gradient_steps_per_step == 0:
