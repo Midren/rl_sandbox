@@ -12,34 +12,35 @@ from rl_sandbox.utils.replay_buffer import (Action, Observation, ReplayBuffer,
                                             Rollout, State)
 
 
-def _async_env_worker(env: Env, obs_queue: mp.Queue, act_queue: mp.Queue):
+def _async_env_worker(env: Env, obs_queue: mp.Queue, act_queue: mp.Queue, obs_preprocessor):
     state, _, terminated = unpack(env.reset())
-    obs_queue.put((state, 0, terminated), block=False)
+    obs_queue.put((state, obs_preprocessor(state), 0, terminated), block=False)
 
     while not terminated:
         action = act_queue.get(block=True)
 
         new_state, reward, terminated = unpack(env.step(action))
         del action
-        obs_queue.put((state, reward, terminated), block=False)
+        obs_queue.put((state, obs_preprocessor(state), reward, terminated), block=False)
 
         state = new_state
 
 
 def iter_rollout_async(
     env: Env,
-    agent: RlAgent
+    agent: RlAgent,
+    obs_preprocessor,
 ) -> t.Generator[tuple[State, Action, float, State, bool, t.Optional[Observation]], None,
                  None]:
     # NOTE: maybe use SharedMemory instead
     obs_queue = mp.Queue(1)
     a_queue = mp.Queue(1)
-    p = mp.Process(target=_async_env_worker, args=(env, obs_queue, a_queue))
+    p = mp.Process(target=_async_env_worker, args=(env, obs_queue, a_queue, obs_preprocessor))
     p.start()
     terminated = False
 
     while not terminated:
-        state, reward, terminated = obs_queue.get(block=True)
+        state_raw, state, reward, terminated = obs_queue.get(block=True)
         action = agent.get_action(state)
         a_queue.put(action)
         yield state, action, reward, None, terminated, state
@@ -48,17 +49,19 @@ def iter_rollout_async(
 def iter_rollout(
     env: Env,
     agent: RlAgent,
-    collect_obs: bool = False
+    preprocess_obs,
+    collect_obs: bool = False,
 ) -> t.Generator[tuple[State, Action, float, State, bool, t.Optional[Observation]], None,
                  None]:
     state, _, terminated = unpack(env.reset())
+    # state = preprocess_obs(state)
     agent.reset()
 
     while not terminated:
         action = agent.get_action(state)
 
         new_state, reward, terminated = unpack(env.step(action))
-
+        # new_state = preprocess_obs(new_state)
         # FIXME: will break for non-DM
         obs = env.render() if collect_obs else None
         # if collect_obs and isinstance(env, dmEnv):
@@ -67,6 +70,7 @@ def iter_rollout(
 
 
 def collect_rollout(env: Env,
+                    preprocess_obs,
                     agent: t.Optional[RlAgent] = None,
                     collect_obs: bool = False) -> Rollout:
     s, a, r, n, f, o = [], [], [], [], [], []
@@ -75,7 +79,7 @@ def collect_rollout(env: Env,
         agent = RandomAgent(env)
 
     for state, action, reward, new_state, terminated, obs in iter_rollout(
-            env, agent, collect_obs):
+            env, agent, preprocess_obs, collect_obs):
         s.append(state)
         a.append(action)
         r.append(reward)
@@ -98,16 +102,17 @@ def collect_rollout(env: Env,
 
 def collect_rollout_num(env: Env,
                         num: int,
+                        preprocess_obs,
                         agent: t.Optional[t.Any] = None,
                         collect_obs: bool = False) -> t.List[Rollout]:
     # TODO: paralelyze
     rollouts = []
     for _ in range(num):
-        rollouts.append(collect_rollout(env, agent, collect_obs))
+        rollouts.append(collect_rollout(env, preprocess_obs, agent, collect_obs))
     return rollouts
 
 
-def fillup_replay_buffer(env: Env, rep_buffer: ReplayBuffer, num: int):
+def fillup_replay_buffer(env: Env, rep_buffer: ReplayBuffer, num: int, preprocess_obs):
     # TODO: paralelyze
     while not rep_buffer.can_sample(num):
-        rep_buffer.add_rollout(collect_rollout(env, collect_obs=False))
+        rep_buffer.add_rollout(collect_rollout(env, preprocess_obs, collect_obs=False))

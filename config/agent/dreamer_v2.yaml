@@ -1,6 +1,6 @@
 _target_: rl_sandbox.agents.DreamerV2
 # World model parameters
-batch_cluster_size: 32
+batch_cluster_size: 64
 latent_dim: 32
 latent_classes: 32
 rssm_dim: 200 
@@ -9,7 +9,7 @@ kl_loss_balancing: 0.8
 world_model_lr: 3e-4
 
 # ActorCritic parameters
-discount_factor: 0.995
+discount_factor: 0.99
 imagination_horizon: 15
 
 actor_lr: 8e-5
