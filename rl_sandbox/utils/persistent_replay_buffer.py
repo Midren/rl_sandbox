@@ -101,10 +101,10 @@ class PersistentReplayBuffer:
                 ).decode().to_tuple("state.pyd", "action.pyd", "reward.pyd", "is_finished.pyd"
                 # NOTE: does not take into account is_finished
                 ).batched(cluster_size + 1, partial=False
-                ).map(self.add_next).batched(seq_num)
+                ).map(self.add_next).shuffle(1000).unbatched()
             # NOTE: in WebDataset github, it is recommended to use such batching by ourselves
             # https://github.com/webdataset/webdataset#dataloader
             self.loader = iter(
-                wds.WebLoader(self.dataset, batch_size=None,
-                              num_workers=4, pin_memory=True).unbatched().shuffle(1000).unbatched().batched(batch_size))
+                wds.WebLoader(self.dataset, batch_size=batch_size,
+                              num_workers=8))
         return next(self.loader)

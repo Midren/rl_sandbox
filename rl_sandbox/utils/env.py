@@ -188,7 +188,7 @@ class DmEnv(Env):
             env_res = self._uncode_ts(self.env.step(action))
         else:
             env_res = ts
-        env_res.reward = np.tanh(rew + (env_res.reward or 0.0))
+        env_res.reward = rew + (env_res.reward or 0.0)
         return env_res
 
     def reset(self) -> EnvStepResult:

@@ -9,11 +9,11 @@ device_type: cuda
 training:
   steps: 1e6
   prefill: 1000
-  pretrain: 0
+  pretrain: 1000
   batch_size: 1024
   gradient_steps_per_step: 5
   save_checkpoint_every: 1e5
-  val_logs_every: 2.5e4
+  val_logs_every: 1.25e4
 
 validation:
   rollout_num: 5

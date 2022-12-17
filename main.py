@@ -53,7 +53,7 @@ def main(cfg: DictConfig):
 
     prof = profile(activities=[ProfilerActivity.CUDA, ProfilerActivity.CPU],
                  on_trace_ready=torch.profiler.tensorboard_trace_handler('runs/profile_dreamer'),
-                 schedule=torch.profiler.schedule(wait=10, warmup=10, active=5, repeat=5),
+                 schedule=torch.profiler.schedule(wait=5, warmup=5, active=10, repeat=3),
                  with_stack=True) if cfg.debug.profiler else None
 
     for i in tqdm(range(cfg.training.pretrain), desc='Pretraining'):
@@ -85,10 +85,11 @@ def main(cfg: DictConfig):
                     prof.step()
                 for loss_name, loss in losses.items():
                     writer.add_scalar(f'train/{loss_name}', loss, global_step)
-            global_step += 1
-            pbar.update(1)
+            global_step += cfg.env.repeat_action_num
+            pbar.update(cfg.env.repeat_action_num)
 
         ### Validation
+        # NOTE: could not work with certain repeat_action_num
         if global_step % cfg.training.val_logs_every == 0:
             rollouts = collect_rollout_num(env, cfg.validation.rollout_num, policy_agent.preprocess_obs, agent)
             # TODO: make logs visualization in separate process
