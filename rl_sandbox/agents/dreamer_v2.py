@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
+import torch.distributions as td
 
 from rl_sandbox.agents.rl_agent import RlAgent
 from rl_sandbox.utils.fc_nn import fc_nn_generator
@@ -25,25 +26,15 @@ class View(nn.Module):
         return x.view(*self.shape)
 
 
-class DebugShapeLayer(nn.Module):
-
-    def __init__(self, note=""):
-        super().__init__()
-        self.note = note
-
-    def forward(self, x):
-        if len(self.note):
-            print(self.note, x.shape)
-        else:
-            print(x.shape)
-        return x
-
-
 class Quantize(nn.Module):
 
     def forward(self, logits):
-        return torch.distributions.one_hot_categorical.OneHotCategoricalStraightThrough(
-            logits=logits)
+        return logits
+        # return torch.distributions.one_hot_categorical.OneHotCategoricalStraightThrough(
+        #     logits=logits)
+
+def Dist(val):
+    return td.OneHotCategoricalStraightThrough(logits=val)
 
 
 class RSSM(nn.Module):
@@ -134,8 +125,8 @@ class RSSM(nn.Module):
         _, determ = self.determ_recurrent(x, deter_state)
 
         # used for KL divergence
-        predicted_stoch_latent = self.estimate_stochastic_latent(determ)
-        return determ, predicted_stoch_latent
+        predicted_stoch_logits = self.estimate_stochastic_latent(determ)
+        return determ, predicted_stoch_logits
 
     def update_current(self, determ, embed):  # Dreamer 'obs_out'
         return self.stoch_net(torch.concat([determ, embed], dim=2))
@@ -161,12 +152,12 @@ class RSSM(nn.Module):
                           (*action.shape[:-1], self.latent_dim * self.latent_classes),
                           device=next(self.stoch_net.parameters()).device))
         deter_prev, stoch_prev = h_prev
-        determ, prior_stoch_dist = self.predict_next(stoch_prev,
+        determ, prior_stoch_logits = self.predict_next(stoch_prev,
                                                      action,
                                                      deter_state=deter_prev)
-        posterior_stoch_dist = self.update_current(determ, embed)
+        posterior_stoch_logits = self.update_current(determ, embed)
 
-        return [determ, prior_stoch_dist, posterior_stoch_dist]
+        return [determ, prior_stoch_logits, posterior_stoch_logits]
 
 
 # NOTE: residual blocks are not used inside dreamer
@@ -182,8 +173,6 @@ class Encoder(nn.Module):
             out_channels = 2**i * channel_step
             layers.append(nn.Conv2d(in_channels, out_channels, kernel_size=k, stride=2))
             layers.append(nn.ELU(inplace=True))
-            # FIXME: change to layer norm when sizes will be known
-            layers.append(nn.BatchNorm2d(out_channels))
             in_channels = out_channels
         layers.append(nn.Flatten())
         self.net = nn.Sequential(*layers)
@@ -212,7 +201,6 @@ class Decoder(nn.Module):
                     nn.ConvTranspose2d(in_channels, out_channels, kernel_size=k,
                                        stride=2))
                 layers.append(nn.ELU(inplace=True))
-                layers.append(nn.BatchNorm2d(out_channels))
             in_channels = out_channels
         self.net = nn.Sequential(*layers)
 
@@ -255,10 +243,10 @@ class WorldModel(nn.Module):
                                                   final_activation=nn.Sigmoid)
 
     def predict_next(self, latent_repr, action, world_state: t.Optional[torch.Tensor]):
-        determ_state, next_repr_dist = self.recurrent_model.predict_next(
+        determ_state, next_repr_logits = self.recurrent_model.predict_next(
             latent_repr.unsqueeze(0), action.unsqueeze(0), world_state)
 
-        next_repr = next_repr_dist.rsample().reshape(
+        next_repr = Dist(next_repr_logits).rsample().reshape(
             -1, self.latent_dim * self.latent_classes)
         reward = self.reward_predictor(
             torch.concat([determ_state.squeeze(0), next_repr], dim=1))
@@ -268,65 +256,97 @@ class WorldModel(nn.Module):
 
     def get_latent(self, obs: torch.Tensor, action, state):
         embed = self.encoder(obs)
-        determ, _, latent_repr_dist = self.recurrent_model(state, embed.unsqueeze(0),
+        determ, _, latent_repr_logits = self.recurrent_model.forward(state, embed.unsqueeze(0),
                                                            action)
-        return determ, latent_repr_dist
+        return determ, latent_repr_logits
 
     def calculate_loss(self, obs: torch.Tensor, a: torch.Tensor, r: torch.Tensor,
                        is_finished: torch.Tensor):
         b, _, h, w = obs.shape  # s <- BxHxWx3
 
         embed = self.encoder(obs)
-        embed = embed.view(b // self.cluster_size, self.cluster_size, -1)
+        embed_c = embed.view(b // self.cluster_size, self.cluster_size, -1)
 
-        obs = obs.view(-1, self.cluster_size, 3, h, w)
-        a = a.view(-1, self.cluster_size, self.actions_num)
-        r = r.view(-1, self.cluster_size, 1)
-        f = is_finished.view(-1, self.cluster_size, 1)
+        obs_c = obs.view(-1, self.cluster_size, 3, h, w)
+        a_c = a.view(-1, self.cluster_size, self.actions_num)
+        r_c = r.view(-1, self.cluster_size, 1)
+        f_c = is_finished.view(-1, self.cluster_size, 1)
 
         h_prev = None
         losses = defaultdict(lambda: torch.zeros(1).to(next(self.parameters()).device))
 
-        def KL(dist1, dist2):
+        def KL(dist1, dist2, clusterify: bool = False):
             KL_ = torch.distributions.kl_divergence
-            Dist = torch.distributions.OneHotCategoricalStraightThrough
-            one = torch.ones(1,device=next(self.parameters()).device)
-            kl_lhs = torch.maximum(KL_(Dist(logits=dist2.logits.detach()), dist1), one)
-            kl_rhs = torch.maximum(KL_(dist2, Dist(logits=dist1.logits.detach())), one)
+            one = torch.zeros(1,device=next(self.parameters()).device)
+            if clusterify:
+                kl_lhs = torch.maximum(KL_(Dist(dist2.detach()), Dist(dist1)), one).view(-1, self.cluster_size).mean(dim=0).sum()
+                kl_rhs = torch.maximum(KL_(Dist(dist2), Dist(dist1.detach())), one).view(-1, self.cluster_size).mean(dim=0).sum()
+            else:
+                kl_lhs = torch.maximum(KL_(Dist(dist2.detach()), Dist(dist1)), one)
+                kl_rhs = torch.maximum(KL_(Dist(dist2), Dist(dist1.detach())), one)
             return self.kl_beta * (self.alpha * kl_lhs.mean()+ (1 - self.alpha) * kl_rhs.mean())
 
         latent_vars = []
+        determ_vars = []
+        prior_logits = []
+        posterior_logits = []
+        inps = []
+        x_recovered = []
 
         for t in range(self.cluster_size):
             # s_t <- 1xB^xHxWx3
-            x_t, embed_t, a_t, r_t, f_t = obs[:, t], embed[:, t].unsqueeze(
-                0), a[:, t].unsqueeze(0), r[:, t], f[:, t]
+            x_t, embed_t, a_t, r_t, f_t = obs_c[:, t], embed_c[:, t].unsqueeze(
+                0), a_c[:, t].unsqueeze(0), r_c[:, t], f_c[:, t]
 
-            determ_t, prior_stoch_dist, posterior_stoch_dist = self.recurrent_model(
+            determ_t, prior_stoch_logits, posterior_stoch_logits = self.recurrent_model.forward(
                 h_prev, embed_t, a_t)
+            posterior_stoch_dist = Dist(posterior_stoch_logits)
             posterior_stoch = posterior_stoch_dist.rsample().reshape(
                 -1, self.latent_dim * self.latent_classes)
 
-            r_t_pred = self.reward_predictor(
-                torch.concat([determ_t.squeeze(0), posterior_stoch], dim=1).detach())
-            f_t_pred = self.discount_predictor(
-                torch.concat([determ_t.squeeze(0), posterior_stoch], dim=1))
+            # x_r = self.image_predictor(torch.concat([determ_t.squeeze(0), posterior_stoch], dim=1))
+            # inps.append(torch.concat([determ_t.squeeze(0), posterior_stoch], dim=1))
+            # x_recovered.append(x_r)
 
-            x_r = self.image_predictor(torch.concat([determ_t.squeeze(0), posterior_stoch], dim=1))
-
-            losses['loss_reconstruction'] += nn.functional.mse_loss(x_t, x_r)
-            losses['loss_reward_pred'] += F.mse_loss(r_t, r_t_pred)
-            losses['loss_discount_pred'] += F.cross_entropy(f_t.type(torch.float32),
-                                                            f_t_pred)
-            # NOTE: entropy can be added as metric
-            losses['loss_kl_reg'] += KL(prior_stoch_dist, posterior_stoch_dist)
+            # losses['loss_reconstruction'] += nn.functional.mse_loss(x_t, x_r)
+            # losses['loss_kl_reg'] += KL(prior_stoch_logits, posterior_stoch_logits)
 
             h_prev = [determ_t, posterior_stoch.unsqueeze(0)]
-            latent_vars.append(posterior_stoch.detach())
+            determ_vars.append(determ_t.squeeze(0))
+            latent_vars.append(posterior_stoch)
 
-        discovered_latents = torch.stack(latent_vars).reshape(
-            -1, self.latent_dim * self.latent_classes)
-        return losses, discovered_latents
+            prior_logits.append(prior_stoch_logits)
+            posterior_logits.append(posterior_stoch_logits)
+
+            # r_t_pred = self.reward_predictor(
+            #     torch.concat([determ_t.squeeze(0), posterior_stoch], dim=1).detach())
+            # f_t_pred = self.discount_predictor(
+            #     torch.concat([determ_t.squeeze(0), posterior_stoch], dim=1))
+
+            # x_r = self.image_predictor(torch.concat([determ_t.squeeze(0), posterior_stoch], dim=1))
+
+            # losses['loss_reconstruction'] += nn.functional.mse_loss(x_t, x_r)
+            # losses['loss_reward_pred'] += F.mse_loss(r_t, r_t_pred)
+            # losses['loss_discount_pred'] += F.cross_entropy(f_t.type(torch.float32),
+            #                                                 f_t_pred)
+            # # NOTE: entropy can be added as metric
+            # losses['loss_kl_reg'] += KL(prior_stoch_logits, posterior_stoch_logits)
+
+
+        # inp = torch.concat([determ_vars.squeeze(0), posterior_stoch], dim=1)
+        inp = torch.concat([torch.concat(determ_vars), torch.concat(latent_vars)], dim=1)
+        r_pred = self.reward_predictor(inp).squeeze()
+        f_pred = self.discount_predictor(inp).squeeze()
+        x_r = self.image_predictor(inp)
+
+        losses['loss_reconstruction'] += F.mse_loss(obs, x_r, reduction='none').view(-1, self.cluster_size, 3, h, w).mean(dim=(0, 2, 3, 4)).sum()
+        losses['loss_reward_pred'] += F.mse_loss(r, r_pred, reduction='none').mean(dim=0).sum()
+        losses['loss_discount_pred'] += F.cross_entropy(is_finished.type(torch.float32),
+                                                        f_pred, reduction='none').mean(dim=0).sum()
+        # NOTE: entropy can be added as metric
+        losses['loss_kl_reg'] += KL(torch.concat(prior_logits), torch.concat(posterior_logits), True)
+
+        return losses, torch.stack(latent_vars).reshape(-1, self.latent_dim * self.latent_classes).detach()
 
 
 class ImaginativeCritic(nn.Module):
@@ -447,7 +467,7 @@ class DreamerV2(RlAgent):
         zs, actions, next_zs, rewards, ts, determs = [], [], [], [], [], []
         z = z_0.detach()
         for _ in range(self.imagination_horizon):
-            a = self.actor(z)
+            a = Dist(self.actor(z))
             world_state, next_z, reward, is_finished = self.world_model.predict_next(
                 z, a.rsample(), world_state)
 
@@ -483,12 +503,13 @@ class DreamerV2(RlAgent):
         obs = torch.from_numpy(obs.copy()).to(next(self.world_model.parameters()).device)
         obs = self.preprocess_obs(obs).unsqueeze(0)
 
-        determ, latent_repr_dist = self.world_model.get_latent(obs, self._last_action,
+        determ, latent_repr_logits = self.world_model.get_latent(obs, self._last_action,
                                                                self._state)
+        latent_repr_dist = Dist(latent_repr_logits)
         self._state = (determ, latent_repr_dist.rsample().reshape(-1,
                                                                   32 * 32).unsqueeze(0))
 
-        actor_dist = self.actor(self._state[1])
+        actor_dist = Dist(self.actor(self._state[1]))
         self._last_action = actor_dist.rsample()
 
         self._action_probs += actor_dist.probs.squeeze()
@@ -503,9 +524,9 @@ class DreamerV2(RlAgent):
 
         action = F.one_hot(self.from_np(init_action).to(torch.int64),
                            num_classes=self.actions_num).squeeze()
-        z_0 = self.world_model.get_latent(obs,
+        z_0 = Dist(self.world_model.get_latent(obs,
                                           action.unsqueeze(0).unsqueeze(0),
-                                          None)[1].rsample().reshape(-1,
+                                          None)[1]).rsample().reshape(-1,
                                                                      32 * 32).unsqueeze(0)
         zs, _, _, _, _, determs = self.imagine_trajectory(z_0.squeeze(0))
         video_r = self.world_model.image_predictor(torch.concat([determs, zs], dim=2)).cpu().detach().numpy()
@@ -566,39 +587,40 @@ class DreamerV2(RlAgent):
         world_model_loss.backward()
         self.world_model_optimizer.step()
 
-        idx = torch.randperm(discovered_latents.size(0))
-        initial_states = discovered_latents[idx]
+        # idx = torch.randperm(discovered_latents.size(0))
+        # initial_states = discovered_latents[idx]
 
-        losses_ac = defaultdict(
-            lambda: torch.zeros(1).to(next(self.critic.parameters()).device))
+        # losses_ac = defaultdict(
+        #     lambda: torch.zeros(1).to(next(self.critic.parameters()).device))
 
-        zs, action_dists, next_zs, rewards, terminal_flags, _ = self.imagine_trajectory(
-            initial_states)
-        vs = self.critic.lambda_return(next_zs, rewards, terminal_flags)
+        # zs, action_dists, next_zs, rewards, terminal_flags, _ = self.imagine_trajectory(
+        #     initial_states)
+        # vs = self.critic.lambda_return(next_zs, rewards, terminal_flags)
 
-        losses_ac['loss_critic'] = F.mse_loss(self.critic.estimate_value(next_zs.detach()),
-                                              vs.detach(),
-                                              reduction='sum') / zs.shape[1]
-        losses_ac['loss_actor_reinforce'] += 0  # unused in dm_control
-        losses_ac['loss_actor_dynamics_backprop'] = -(
-            (1 - self.rho) * vs).sum() / zs.shape[1]
-        losses_ac['loss_actor_entropy'] = -self.eta * torch.stack(
-            [a.entropy() for a in action_dists[:-1]]).sum() / zs.shape[1]
-        losses_ac['loss_actor'] += losses_ac['loss_actor_reinforce'] + losses_ac[
-            'loss_actor_dynamics_backprop'] + losses_ac['loss_actor_entropy']
+        # losses_ac['loss_critic'] = F.mse_loss(self.critic.estimate_value(next_zs.detach()),
+        #                                       vs.detach(),
+        #                                       reduction='sum') / zs.shape[1]
+        # losses_ac['loss_actor_reinforce'] += 0  # unused in dm_control
+        # losses_ac['loss_actor_dynamics_backprop'] = -(
+        #     (1 - self.rho) * vs).sum() / zs.shape[1]
+        # losses_ac['loss_actor_entropy'] = -self.eta * torch.stack(
+        #     [a.entropy() for a in action_dists[:-1]]).sum() / zs.shape[1]
+        # losses_ac['loss_actor'] += losses_ac['loss_actor_reinforce'] + losses_ac[
+        #     'loss_actor_dynamics_backprop'] + losses_ac['loss_actor_entropy']
 
-        self.actor_optimizer.zero_grad()
-        self.critic_optimizer.zero_grad()
-        losses_ac['loss_critic'].backward()
-        losses_ac['loss_actor'].backward()
-        self.actor_optimizer.step()
-        self.critic_optimizer.step()
-        self.critic.update_target()
+        # self.actor_optimizer.zero_grad()
+        # self.critic_optimizer.zero_grad()
+        # losses_ac['loss_critic'].backward()
+        # losses_ac['loss_actor'].backward()
+        # self.actor_optimizer.step()
+        # self.critic_optimizer.step()
+        # self.critic.update_target()
 
         losses = {l: val.detach().cpu().item() for l, val in losses.items()}
-        losses_ac = {l: val.detach().cpu().item() for l, val in losses_ac.items()}
+        # losses_ac = {l: val.detach().cpu().item() for l, val in losses_ac.items()}
 
-        return losses | losses_ac
+        # return losses | losses_ac
+        return losses
 
     def save_ckpt(self, epoch_num: int, losses: dict[str, float]):
         torch.save(
