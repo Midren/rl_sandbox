@@ -86,9 +86,10 @@ class ReplayBuffer:
         # NOTE: constant creation of numpy arrays from self.rollout_len seems terrible for me
         s, a, r, n, t = [], [], [], [], []
         do_add_curr = self.curr_rollout is not None and len(self.curr_rollout.states) > cluster_size
+        tot = self.total_num + (len(self.curr_rollout.states) if do_add_curr else 0)
         r_indeces = np.random.choice(len(self.rollouts) + int(do_add_curr),
                                      seq_num,
-                                     p=np.array(self.rollouts_len + deque([len(self.curr_rollout.states)] if do_add_curr else [])) / (self.total_num + int(do_add_curr)*len(self.curr_rollout.states)))
+                                     p=np.array(self.rollouts_len + deque([len(self.curr_rollout.states)] if do_add_curr else [])) / tot)
         s_indeces = []
         for r_idx in r_indeces:
             if r_idx != len(self.rollouts):
