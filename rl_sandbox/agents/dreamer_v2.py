@@ -26,15 +26,63 @@ class View(nn.Module):
         return x.view(*self.shape)
 
 
-class Quantize(nn.Module):
+class Sigmoid2(nn.Module):
+    def forward(self, x):
+        return 2*torch.sigmoid(x/2)
 
-    def forward(self, logits):
-        return logits
-        # return torch.distributions.one_hot_categorical.OneHotCategoricalStraightThrough(
-        #     logits=logits)
+class NormalWithOffset(nn.Module):
+    def __init__(self, min_std: float, std_trans: str = 'sigmoid2', transform: t.Optional[str] = None):
+        super().__init__()
+        self.min_std = min_std
+        match std_trans:
+            case 'softplus':
+                self.std_trans = nn.Softplus()
+            case 'sigmoid':
+                self.std_trans = nn.Sigmoid()
+            case 'sigmoid2':
+                self.std_trans = Sigmoid2()
+            case _:
+                raise RuntimeError("Unknown std transformation")
+
+        match transform:
+            case 'tanh':
+                self.trans = [td.TanhTransform(cache_size=1)]
+            case None:
+                self.trans = None
+            case _:
+                raise RuntimeError("Unknown distribution transformation")
+
+    def forward(self, x):
+        mean, std = x.chunk(2, dim=-1)
+        dist = td.Normal(mean, self.std_trans(std) + self.min_std)
+        if self.trans is None:
+            return dist
+        else:
+            return td.TransformedDistribution(dist, self.trans)
+
+
+class DistLayer(nn.Module):
+    def __init__(self, type: str):
+        super().__init__()
+        match type:
+            case 'mse':
+                self.dist = lambda x: td.Normal(x, 1.0)
+            case 'normal':
+                self.dist = NormalWithOffset(min_std=0.1)
+            case 'onehot':
+                self.dist = lambda x: td.OneHotCategoricalStraightThrough(logits=x)
+            case 'normal_tanh':
+                self.dist = NormalWithOffset(min_std=0.1, transform='tanh')
+            case 'binary':
+                self.dist = lambda x: td.Bernoulli(logits=x)
+            case _:
+                raise RuntimeError("Invalid dist layer")
+
+    def forward(self, x):
+        return td.Independent(self.dist(x), 1)
 
 def Dist(val):
-    return td.OneHotCategoricalStraightThrough(logits=val)
+    return DistLayer('onehot')(val)
 
 
 class RSSM(nn.Module):
@@ -87,8 +135,7 @@ class RSSM(nn.Module):
                 nn.ELU(inplace=True),
                 nn.Linear(hidden_size,
                           latent_dim * self.latent_classes),  # Dreamer 'img_dist_{k}'
-                View((-1, latent_dim, self.latent_classes)),
-                Quantize()) for _ in range(self.ensemble_num)
+                View((-1, latent_dim, self.latent_classes))) for _ in range(self.ensemble_num)
         ])
 
         # For observation we do not have ensemble
@@ -100,10 +147,7 @@ class RSSM(nn.Module):
             nn.ELU(inplace=True),
             nn.Linear(hidden_size,
                       latent_dim * self.latent_classes),  # Dreamer 'obs_dist'
-            View((-1, latent_dim, self.latent_classes)),
-            # NOTE: Maybe worth having some LogSoftMax as activation
-            #       before using input as logits for distribution
-            Quantize())
+            View((-1, latent_dim, self.latent_classes)))
 
     def estimate_stochastic_latent(self, prev_determ):
         dists_per_model = [model(prev_determ) for model in self.ensemble_prior_estimator]
@@ -111,7 +155,7 @@ class RSSM(nn.Module):
         #       taking only one random between all ensembles
         # FIXME: temporary use the same model
         idx = torch.randint(0, self.ensemble_num, ())
-        return dists_per_model[0]
+        return dists_per_model[idx]
 
     def predict_next(self,
                      stoch_latent,
@@ -144,7 +188,7 @@ class RSSM(nn.Module):
         # Move outside of rssm to omit checking
         if h_prev is None:
             h_prev = (torch.zeros((
-                *action.shape[:-1],
+                *embed.shape[:-1],
                 self.hidden_size,
             ),
                                   device=next(self.stoch_net.parameters()).device),
@@ -172,6 +216,7 @@ class Encoder(nn.Module):
         for i, k in enumerate(kernel_sizes):
             out_channels = 2**i * channel_step
             layers.append(nn.Conv2d(in_channels, out_channels, kernel_size=k, stride=2))
+            layers.append(nn.BatchNorm2d(out_channels))
             layers.append(nn.ELU(inplace=True))
             in_channels = out_channels
         layers.append(nn.Flatten())
@@ -197,6 +242,7 @@ class Decoder(nn.Module):
                 out_channels = 3
                 layers.append(nn.ConvTranspose2d(in_channels, 3, kernel_size=k, stride=2))
             else:
+                layers.append(nn.BatchNorm2d(in_channels))
                 layers.append(
                     nn.ConvTranspose2d(in_channels, out_channels, kernel_size=k,
                                        stride=2))
@@ -208,13 +254,15 @@ class Decoder(nn.Module):
         x = self.convin(X)
         x = x.view(-1, 32 * self.channel_step, 1, 1)
         return self.net(x)
+        # return td.Independent(td.Normal(self.net(x), 1.0), 3)
 
 
 class WorldModel(nn.Module):
 
     def __init__(self, batch_cluster_size, latent_dim, latent_classes, rssm_dim,
-                 actions_num, kl_loss_scale, kl_loss_balancing):
+                 actions_num, kl_loss_scale, kl_loss_balancing, kl_free_nats):
         super().__init__()
+        self.kl_free_nats = kl_free_nats
         self.kl_beta = kl_loss_scale
         self.rssm_dim = rssm_dim
         self.latent_dim = latent_dim
@@ -234,13 +282,14 @@ class WorldModel(nn.Module):
                                                 1,
                                                 hidden_size=400,
                                                 num_layers=4,
-                                                intermediate_activation=nn.ELU)
+                                                intermediate_activation=nn.ELU,
+                                                final_activation=DistLayer('mse'))
         self.discount_predictor = fc_nn_generator(rssm_dim + latent_dim * latent_classes,
                                                   1,
                                                   hidden_size=400,
                                                   num_layers=4,
                                                   intermediate_activation=nn.ELU,
-                                                  final_activation=nn.Sigmoid)
+                                                  final_activation=DistLayer('binary'))
 
     def predict_next(self, latent_repr, action, world_state: t.Optional[torch.Tensor]):
         determ_state, next_repr_logits = self.recurrent_model.predict_next(
@@ -249,9 +298,8 @@ class WorldModel(nn.Module):
         next_repr = Dist(next_repr_logits).rsample().reshape(
             -1, self.latent_dim * self.latent_classes)
         reward = self.reward_predictor(
-            torch.concat([determ_state.squeeze(0), next_repr], dim=1))
-        is_finished = self.discount_predictor(
-            torch.concat([determ_state.squeeze(0), next_repr], dim=1))
+            torch.concat([determ_state.squeeze(0), next_repr], dim=1)).rsample()
+        is_finished = self.discount_predictor(torch.concat([determ_state.squeeze(0), next_repr], dim=1)).sample()
         return determ_state, next_repr, reward, is_finished
 
     def get_latent(self, obs: torch.Tensor, action, state):
@@ -265,51 +313,51 @@ class WorldModel(nn.Module):
         b, _, h, w = obs.shape  # s <- BxHxWx3
 
         embed = self.encoder(obs)
-        embed_c = embed.view(b // self.cluster_size, self.cluster_size, -1)
+        embed_c = embed.reshape(b // self.cluster_size, self.cluster_size, -1)
 
-        obs_c = obs.view(-1, self.cluster_size, 3, h, w)
-        a_c = a.view(-1, self.cluster_size, self.actions_num)
-        r_c = r.view(-1, self.cluster_size, 1)
-        f_c = is_finished.view(-1, self.cluster_size, 1)
+        obs_c = obs.reshape(-1, self.cluster_size, 3, h, w)
+        a_c = a.reshape(-1, self.cluster_size, self.actions_num)
+        r_c = r.reshape(-1, self.cluster_size, 1)
+        f_c = is_finished.reshape(-1, self.cluster_size, 1)
 
         h_prev = None
         losses = defaultdict(lambda: torch.zeros(1).to(next(self.parameters()).device))
 
         def KL(dist1, dist2, clusterify: bool = False):
             KL_ = torch.distributions.kl_divergence
-            one = torch.zeros(1,device=next(self.parameters()).device)
+            one = self.kl_free_nats * torch.ones(1, device=next(self.parameters()).device)
             if clusterify:
                 kl_lhs = torch.maximum(KL_(Dist(dist2.detach()), Dist(dist1)), one).view(-1, self.cluster_size).mean(dim=0).sum()
                 kl_rhs = torch.maximum(KL_(Dist(dist2), Dist(dist1.detach())), one).view(-1, self.cluster_size).mean(dim=0).sum()
             else:
-                kl_lhs = torch.maximum(KL_(Dist(dist2.detach()), Dist(dist1)), one)
-                kl_rhs = torch.maximum(KL_(Dist(dist2), Dist(dist1.detach())), one)
-            return self.kl_beta * (self.alpha * kl_lhs.mean()+ (1 - self.alpha) * kl_rhs.mean())
+                kl_lhs = torch.maximum(KL_(Dist(dist2.detach()), Dist(dist1)), one).mean()
+                kl_rhs = torch.maximum(KL_(Dist(dist2), Dist(dist1.detach())), one).mean()
+            return self.kl_beta * (self.alpha * kl_lhs + (1 - self.alpha) * kl_rhs)
 
         latent_vars = []
         determ_vars = []
         prior_logits = []
         posterior_logits = []
-        inps = []
-        x_recovered = []
+
+        # inps = []
+        # reconstructed = []
 
         for t in range(self.cluster_size):
             # s_t <- 1xB^xHxWx3
             x_t, embed_t, a_t, r_t, f_t = obs_c[:, t], embed_c[:, t].unsqueeze(
-                0), a_c[:, t].unsqueeze(0), r_c[:, t], f_c[:, t]
+                    0), a_c[:, t].unsqueeze(0), r_c[:, t], f_c[:, t]
 
             determ_t, prior_stoch_logits, posterior_stoch_logits = self.recurrent_model.forward(
                 h_prev, embed_t, a_t)
-            posterior_stoch_dist = Dist(posterior_stoch_logits)
-            posterior_stoch = posterior_stoch_dist.rsample().reshape(
+            posterior_stoch = Dist(posterior_stoch_logits).rsample().reshape(
                 -1, self.latent_dim * self.latent_classes)
 
-            # x_r = self.image_predictor(torch.concat([determ_t.squeeze(0), posterior_stoch], dim=1))
-            # inps.append(torch.concat([determ_t.squeeze(0), posterior_stoch], dim=1))
-            # x_recovered.append(x_r)
-
-            # losses['loss_reconstruction'] += nn.functional.mse_loss(x_t, x_r)
-            # losses['loss_kl_reg'] += KL(prior_stoch_logits, posterior_stoch_logits)
+            # inp_t = torch.concat([determ_t.squeeze(0), posterior_stoch], dim=-1)
+            # x_r = self.image_predictor(inp_t)
+            # inps.append(inp_t)
+            # reconstructed.append(x_r)
+            #losses['loss_reconstruction'] += nn.functional.mse_loss(x_t, x_r)
+            #losses['loss_kl_reg'] += KL(prior_stoch_logits, posterior_stoch_logits)
 
             h_prev = [determ_t, posterior_stoch.unsqueeze(0)]
             determ_vars.append(determ_t.squeeze(0))
@@ -318,35 +366,23 @@ class WorldModel(nn.Module):
             prior_logits.append(prior_stoch_logits)
             posterior_logits.append(posterior_stoch_logits)
 
-            # r_t_pred = self.reward_predictor(
-            #     torch.concat([determ_t.squeeze(0), posterior_stoch], dim=1).detach())
-            # f_t_pred = self.discount_predictor(
-            #     torch.concat([determ_t.squeeze(0), posterior_stoch], dim=1))
-
-            # x_r = self.image_predictor(torch.concat([determ_t.squeeze(0), posterior_stoch], dim=1))
-
-            # losses['loss_reconstruction'] += nn.functional.mse_loss(x_t, x_r)
-            # losses['loss_reward_pred'] += F.mse_loss(r_t, r_t_pred)
-            # losses['loss_discount_pred'] += F.cross_entropy(f_t.type(torch.float32),
-            #                                                 f_t_pred)
-            # # NOTE: entropy can be added as metric
-            # losses['loss_kl_reg'] += KL(prior_stoch_logits, posterior_stoch_logits)
-
-
         # inp = torch.concat([determ_vars.squeeze(0), posterior_stoch], dim=1)
-        inp = torch.concat([torch.concat(determ_vars), torch.concat(latent_vars)], dim=1)
-        r_pred = self.reward_predictor(inp).squeeze()
-        f_pred = self.discount_predictor(inp).squeeze()
-        x_r = self.image_predictor(inp)
+        inp = torch.concat([torch.stack(determ_vars, dim=1), torch.stack(latent_vars, dim=1)], dim=-1)
+        r_pred = self.reward_predictor(inp)
+        f_pred = self.discount_predictor(inp)
+        x_r = self.image_predictor(torch.flatten(inp, 0, 1))
 
-        losses['loss_reconstruction'] += F.mse_loss(obs, x_r, reduction='none').view(-1, self.cluster_size, 3, h, w).mean(dim=(0, 2, 3, 4)).sum()
-        losses['loss_reward_pred'] += F.mse_loss(r, r_pred, reduction='none').mean(dim=0).sum()
-        losses['loss_discount_pred'] += F.cross_entropy(is_finished.type(torch.float32),
-                                                        f_pred, reduction='none').mean(dim=0).sum()
+        losses['loss_reconstruction'] += F.mse_loss(x_r, obs) * 32
+        #losses['loss_reward_pred'] += F.mse_loss(r, r_pred)
+        #losses['loss_discount_pred'] += F.binary_cross_entropy_with_logits(is_finished.type(torch.float32), f_pred)
+        # losses['loss_reconstruction'] += -x_r.log_prob(obs).mean()
+        losses['loss_reward_pred'] += -r_pred.log_prob(r_c).mean()
+        losses['loss_discount_pred'] += -f_pred.log_prob(f_c.type(torch.float32)).mean()
         # NOTE: entropy can be added as metric
-        losses['loss_kl_reg'] += KL(torch.concat(prior_logits), torch.concat(posterior_logits), True)
+        losses['loss_kl_reg'] += KL(torch.flatten(torch.stack(prior_logits, dim=1), 0, 1),
+                                    torch.flatten(torch.stack(posterior_logits, dim=1), 0, 1), False)
 
-        return losses, torch.stack(latent_vars).reshape(-1, self.latent_dim * self.latent_classes).detach()
+        return losses, torch.stack(latent_vars, dim=1).reshape(-1, self.latent_dim * self.latent_classes).detach()
 
 
 class ImaginativeCritic(nn.Module):
@@ -401,6 +437,7 @@ class DreamerV2(RlAgent):
             self,
             obs_space_num: int,  # NOTE: encoder/decoder will work only with 64x64 currently
             actions_num: int,
+            action_type: str,
             batch_cluster_size: int,
             latent_dim: int,
             latent_classes: int,
@@ -408,6 +445,7 @@ class DreamerV2(RlAgent):
             discount_factor: float,
             kl_loss_scale: float,
             kl_loss_balancing: float,
+            kl_loss_free_nats: float,
             imagination_horizon: int,
             critic_update_interval: int,
             actor_reinforce_fraction: float,
@@ -419,7 +457,6 @@ class DreamerV2(RlAgent):
             critic_lr: float,
             device_type: str = 'cpu'):
 
-        self.actions_num = actions_num
         self.imagination_horizon = imagination_horizon
         self.cluster_size = batch_cluster_size
         self.actions_num = actions_num
@@ -430,21 +467,22 @@ class DreamerV2(RlAgent):
 
         self.world_model = WorldModel(batch_cluster_size, latent_dim, latent_classes,
                                       rssm_dim, actions_num, kl_loss_scale,
-                                      kl_loss_balancing).to(device_type)
-        # TODO: final activation should depend whether agent
-        # action space in one hot or identity if real-valued
+                                      kl_loss_balancing, kl_loss_free_nats).to(device_type)
+
         self.actor = fc_nn_generator(latent_dim * latent_classes,
-                                     actions_num,
+                                     actions_num * 2 if action_type == 'continuous' else actions_num,
                                      400,
                                      4,
                                      intermediate_activation=nn.ELU,
-                                     final_activation=Quantize).to(device_type)
+                                     final_activation=DistLayer('normal_tanh' if action_type == 'continuous' else 'onehot')).to(device_type)
+
         self.critic = ImaginativeCritic(discount_factor, critic_update_interval,
                                         critic_soft_update_fraction,
                                         critic_value_target_lambda,
                                         latent_dim * latent_classes,
                                         actions_num).to(device_type)
 
+        self.scaler = torch.cuda.amp.GradScaler()
         self.world_model_optimizer = torch.optim.AdamW(self.world_model.parameters(),
                                                        lr=world_model_lr,
                                                        eps=1e-5,
@@ -462,12 +500,12 @@ class DreamerV2(RlAgent):
     def imagine_trajectory(
         self, z_0
     ) -> tuple[torch.Tensor, torch.distributions.Distribution, torch.Tensor, torch.Tensor,
-               torch.Tensor]:
+               torch.Tensor, torch.Tensor]:
         world_state = None
         zs, actions, next_zs, rewards, ts, determs = [], [], [], [], [], []
         z = z_0.detach()
         for _ in range(self.imagination_horizon):
-            a = Dist(self.actor(z))
+            a = self.actor(z)
             world_state, next_z, reward, is_finished = self.world_model.predict_next(
                 z, a.rsample(), world_state)
 
@@ -497,6 +535,7 @@ class DreamerV2(RlAgent):
         # Swap channel from last to 3 from last
         order = order[:-3] + [order[-1]] + order[-3:-1]
         return ((obs.type(torch.float32) / 255.0) - 0.5).permute(order)
+        # return obs.type(torch.float32).permute(order)
 
     def get_action(self, obs: Observation) -> Action:
         # NOTE: pytorch fails without .copy() only when get_action is called
@@ -509,26 +548,31 @@ class DreamerV2(RlAgent):
         self._state = (determ, latent_repr_dist.rsample().reshape(-1,
                                                                   32 * 32).unsqueeze(0))
 
-        actor_dist = Dist(self.actor(self._state[1]))
+        actor_dist = self.actor(self._state[1])
         self._last_action = actor_dist.rsample()
 
-        self._action_probs += actor_dist.probs.squeeze()
-        self._latent_probs += latent_repr_dist.probs.squeeze()
+        if False:
+            self._action_probs += actor_dist.base_dist.probs.squeeze()
+        self._latent_probs += latent_repr_dist.base_dist.probs.squeeze()
         self._stored_steps += 1
 
-        return np.array([self._last_action.squeeze().detach().cpu().numpy().argmax()])
+        if False:
+            return np.array([self._last_action.squeeze().detach().cpu().numpy().argmax()])
+        else:
+            return self._last_action.squeeze().detach().cpu().numpy()
 
     def _generate_video(self, obs: Observation, init_action: Action):
         obs = torch.from_numpy(obs.copy()).to(next(self.world_model.parameters()).device)
         obs = self.preprocess_obs(obs).unsqueeze(0)
 
-        action = F.one_hot(self.from_np(init_action).to(torch.int64),
-                           num_classes=self.actions_num).squeeze()
-        z_0 = Dist(self.world_model.get_latent(obs,
-                                          action.unsqueeze(0).unsqueeze(0),
-                                          None)[1]).rsample().reshape(-1,
-                                                                     32 * 32).unsqueeze(0)
+        if False:
+            action = F.one_hot(self.from_np(init_action).to(torch.int64),
+                               num_classes=self.actions_num).squeeze()
+        else:
+            action = self.from_np(init_action)
+        z_0 = Dist(self.world_model.get_latent(obs, action.unsqueeze(0).unsqueeze(0), None)[1]).rsample().reshape(-1, 32 * 32).unsqueeze(0)
         zs, _, _, _, _, determs = self.imagine_trajectory(z_0.squeeze(0))
+        # video_r = self.world_model.image_predictor(torch.concat([determs, zs], dim=2)).rsample().cpu().detach().numpy()
         video_r = self.world_model.image_predictor(torch.concat([determs, zs], dim=2)).cpu().detach().numpy()
         video_r = ((video_r + 0.5) * 255.0).astype(np.uint8)
         return video_r
@@ -549,13 +593,17 @@ class DreamerV2(RlAgent):
         videos_comparison = np.expand_dims(np.concatenate([videos, videos_r], axis=2), 0)
         latent_hist = (self._latent_probs / self._stored_steps).detach().cpu().numpy()
         latent_hist = ((latent_hist / latent_hist.max() * 255.0 )).astype(np.uint8)
-        action_hist = (self._action_probs / self._stored_steps).detach().cpu().numpy()
 
-        # logger.add_histogram('val/action_probs', action_hist, epoch_num)
-        fig = plt.Figure()
-        ax = fig.add_axes([0, 0, 1, 1])
-        ax.bar(np.arange(self.actions_num), action_hist)
-        logger.add_figure('val/action_probs', fig, epoch_num)
+        # if discrete action space
+        if False:
+            action_hist = (self._action_probs / self._stored_steps).detach().cpu().numpy()
+            fig = plt.Figure()
+            ax = fig.add_axes([0, 0, 1, 1])
+            ax.bar(np.arange(self.actions_num), action_hist)
+            logger.add_figure('val/action_probs', fig, epoch_num)
+        else:
+            # log mean +- std
+            pass
         logger.add_image('val/latent_probs', latent_hist, epoch_num, dataformats='HW')
         logger.add_image('val/latent_probs_sorted', np.sort(latent_hist, axis=1), epoch_num, dataformats='HW')
         logger.add_video('val/dreamed_rollout', videos_comparison, epoch_num)
@@ -569,52 +617,73 @@ class DreamerV2(RlAgent):
 
         obs = self.preprocess_obs(self.from_np(obs))
         a = self.from_np(a).to(torch.int64)
-        a = F.one_hot(a, num_classes=self.actions_num).squeeze()
+        if False:
+            a = F.one_hot(a, num_classes=self.actions_num).squeeze()
         r = self.from_np(r)
         next_obs = self.preprocess_obs(self.from_np(next_obs))
         is_finished = self.from_np(is_finished)
 
         # take some latent embeddings as initial step
-        losses, discovered_latents = self.world_model.calculate_loss(
-            next_obs, a, r, is_finished)
+        with torch.cuda.amp.autocast(enabled=False):
+            losses, discovered_latents = self.world_model.calculate_loss(
+                next_obs, a, r, is_finished)
 
-        # NOTE: 'aten::nonzero' inside KL divergence is not currently supported on M1 Pro MPS device
-        world_model_loss = torch.Tensor(1).to(next(self.world_model.parameters()).device)
-        for l in losses.values():
-            world_model_loss += l
+            # NOTE: 'aten::nonzero' inside KL divergence is not currently supported on M1 Pro MPS device
+            # world_model_loss = torch.Tensor(1).to(next(self.world_model.parameters()).device)
+            world_model_loss = (losses['loss_reconstruction'] +
+                                losses['loss_reward_pred'] +
+                                losses['loss_kl_reg'] +
+                                losses['loss_discount_pred'])
+        # for l in losses.values():
+        #     world_model_loss += l
 
-        self.world_model_optimizer.zero_grad()
-        world_model_loss.backward()
-        self.world_model_optimizer.step()
+        self.world_model_optimizer.zero_grad(set_to_none=True)
+        self.scaler.scale(world_model_loss).backward()
 
-        # idx = torch.randperm(discovered_latents.size(0))
-        # initial_states = discovered_latents[idx]
+        # FIXME: clip gradient should be parametrized
+        self.scaler.unscale_(self.world_model_optimizer)
+        nn.utils.clip_grad_norm_(self.world_model.parameters(), 100)
+        self.scaler.step(self.world_model_optimizer)
 
-        # losses_ac = defaultdict(
-        #     lambda: torch.zeros(1).to(next(self.critic.parameters()).device))
+        # with torch.cuda.amp.autocast(enabled=False):
+        #     idx = torch.randperm(discovered_latents.size(0))
+        #     initial_states = discovered_latents[idx]
 
-        # zs, action_dists, next_zs, rewards, terminal_flags, _ = self.imagine_trajectory(
-        #     initial_states)
-        # vs = self.critic.lambda_return(next_zs, rewards, terminal_flags)
+        #     losses_ac = defaultdict(
+        #         lambda: torch.zeros(1).to(next(self.critic.parameters()).device))
 
-        # losses_ac['loss_critic'] = F.mse_loss(self.critic.estimate_value(next_zs.detach()),
-        #                                       vs.detach(),
-        #                                       reduction='sum') / zs.shape[1]
-        # losses_ac['loss_actor_reinforce'] += 0  # unused in dm_control
-        # losses_ac['loss_actor_dynamics_backprop'] = -(
-        #     (1 - self.rho) * vs).sum() / zs.shape[1]
-        # losses_ac['loss_actor_entropy'] = -self.eta * torch.stack(
-        #     [a.entropy() for a in action_dists[:-1]]).sum() / zs.shape[1]
-        # losses_ac['loss_actor'] += losses_ac['loss_actor_reinforce'] + losses_ac[
-        #     'loss_actor_dynamics_backprop'] + losses_ac['loss_actor_entropy']
+        #     zs, action_dists, next_zs, rewards, terminal_flags, _ = self.imagine_trajectory(
+        #         initial_states)
+        #     vs = self.critic.lambda_return(next_zs, rewards, terminal_flags)
 
-        # self.actor_optimizer.zero_grad()
-        # self.critic_optimizer.zero_grad()
-        # losses_ac['loss_critic'].backward()
-        # losses_ac['loss_actor'].backward()
-        # self.actor_optimizer.step()
-        # self.critic_optimizer.step()
+        #     losses_ac['loss_critic'] = F.mse_loss(self.critic.estimate_value(next_zs.detach()),
+        #                                           vs.detach(),
+        #                                           reduction='sum') / zs.shape[1]
+        #     losses_ac['loss_actor_reinforce'] += 0  # unused in dm_control
+        #     losses_ac['loss_actor_dynamics_backprop'] = -(
+        #         (1 - self.rho) * vs).sum() / zs.shape[1]
+        #     # FIXME: Is it correct to use normal entropy with Tanh transformation
+        #     losses_ac['loss_actor_entropy'] = -self.eta * torch.stack(
+        #         [a.base_dist.base_dist.entropy() for a in action_dists[:-1]]).sum() / zs.shape[1]
+        #     losses_ac['loss_actor'] += losses_ac['loss_actor_reinforce'] + losses_ac[
+        #         'loss_actor_dynamics_backprop'] + losses_ac['loss_actor_entropy']
+
+        # self.actor_optimizer.zero_grad(set_to_none=True)
+        # self.critic_optimizer.zero_grad(set_to_none=True)
+
+        # self.scaler.scale(losses_ac['loss_critic']).backward()
+        # self.scaler.scale(losses_ac['loss_actor']).backward()
+
+        # self.scaler.unscale_(self.actor_optimizer)
+        # self.scaler.unscale_(self.critic_optimizer)
+        # nn.utils.clip_grad_norm_(self.actor.parameters(), 100)
+        # nn.utils.clip_grad_norm_(self.critic.parameters(), 100)
+
+        # self.scaler.step(self.actor_optimizer)
+        # self.scaler.step(self.critic_optimizer)
+
         # self.critic.update_target()
+        self.scaler.update()
 
         losses = {l: val.detach().cpu().item() for l, val in losses.items()}
         # losses_ac = {l: val.detach().cpu().item() for l, val in losses_ac.items()}

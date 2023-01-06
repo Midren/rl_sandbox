@@ -1,5 +1,6 @@
 defaults:
   - agent/dreamer_v2
+  #- env/dm_quadruped
   - env/dm_cartpole
   - _self_
 
@@ -7,13 +8,13 @@ seed: 42
 device_type: cuda
 
 training:
-  steps: 1e6
+  steps: 5e5
   prefill: 1000
-  pretrain: 0
+  pretrain: 1e3
   batch_size: 1024
   gradient_steps_per_step: 5
   save_checkpoint_every: 1e5
-  val_logs_every: 5e3
+  val_logs_every: 2.5e3
 
 validation:
   rollout_num: 5

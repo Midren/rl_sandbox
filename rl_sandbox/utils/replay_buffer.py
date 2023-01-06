@@ -69,7 +69,7 @@ class ReplayBuffer:
             if f:
                 self.add_rollout(
                     Rollout(np.array(self.curr_rollout.states),
-                            np.array(self.curr_rollout.actions),
+                            np.array(self.curr_rollout.actions).reshape(len(self.curr_rollout.actions), -1),
                             np.array(self.curr_rollout.rewards, dtype=np.float32),
                             np.array([n]), np.array(self.curr_rollout.is_finished)))
                 self.curr_rollout = None
@@ -105,6 +105,10 @@ class ReplayBuffer:
 
             if r_idx == len(self.rollouts):
                 r_len += 1
+                # FIXME: hot-fix for 1d action space, better to find smarter solution
+                actions = np.array(rollout.actions[s_idx:s_idx + cluster_size]).reshape(cluster_size, -1)
+            else:
+                actions = rollout.actions[s_idx:s_idx + cluster_size]
 
             s.append(rollout.states[s_idx:s_idx + cluster_size])
             a.append(rollout.actions[s_idx:s_idx + cluster_size])

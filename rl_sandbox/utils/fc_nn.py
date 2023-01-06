@@ -6,7 +6,7 @@ def fc_nn_generator(input_num: int,
                     hidden_size: int,
                     num_layers: int,
                     intermediate_activation: t.Type[nn.Module] = nn.ReLU,
-                    final_activation: t.Type[nn.Module] = nn.Identity):
+                    final_activation: nn.Module = nn.Identity()):
     layers = []
     layers.append(nn.Linear(input_num, hidden_size))
     layers.append(nn.ReLU(inplace=True))
@@ -14,5 +14,5 @@ def fc_nn_generator(input_num: int,
         layers.append(nn.Linear(hidden_size, hidden_size))
         layers.append(intermediate_activation(inplace=True))
     layers.append(nn.Linear(hidden_size, output_num))
-    layers.append(final_activation())
+    layers.append(final_activation)
     return nn.Sequential(*layers)

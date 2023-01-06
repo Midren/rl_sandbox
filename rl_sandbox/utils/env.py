@@ -186,14 +186,16 @@ class MockEnv(Env):
 
 class DmEnv(Env):
 
-    def __init__(self, run_on_pixels: bool, obs_res: tuple[int,
-                                                           int], repeat_action_num: int,
+    def __init__(self, run_on_pixels: bool,
+                 camera_id: int,
+                 obs_res: tuple[int, int], repeat_action_num: int,
                  domain_name: str, task_name: str, transforms: list[ActionTransformer]):
+        self.camera_id = camera_id
         self.env: dmEnviron = suite.load(domain_name=domain_name, task_name=task_name)
         super().__init__(run_on_pixels, obs_res, repeat_action_num, transforms)
 
     def render(self):
-        return self.env.physics.render(*self.obs_res)
+        return self.env.physics.render(*self.obs_res, camera_id=self.camera_id)
 
     def _uncode_ts(self, ts: TimeStep) -> EnvStepResult:
         if self.run_on_pixels:
@@ -214,7 +216,7 @@ class DmEnv(Env):
             env_res = self._uncode_ts(self.env.step(action))
         else:
             env_res = ts
-        env_res.reward = np.tanh(rew + (env_res.reward or 0.0))
+        env_res.reward = rew + (env_res.reward or 0.0)
         return env_res
 
     def reset(self) -> EnvStepResult:
