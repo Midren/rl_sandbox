@@ -19,11 +19,23 @@ from rl_sandbox.utils.rollout_generation import (collect_rollout, collect_rollou
 from rl_sandbox.utils.schedulers import LinearScheduler
 
 
+class SummaryWriterMock():
+    def add_scalar(*args, **kwargs):
+        pass
+
+    def add_video(*args, **kwargs):
+        pass
+
+    def add_image(*args, **kwargs):
+        pass
+
+
 @hydra.main(version_base="1.2", config_path='config', config_name='config')
 def main(cfg: DictConfig):
     # print(OmegaConf.to_yaml(cfg))
     torch.distributions.Distribution.set_default_validate_args(False)
     torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
 
     env: Env = hydra.utils.instantiate(cfg.env)
 
@@ -37,17 +49,20 @@ def main(cfg: DictConfig):
     # TODO: Implement smarter techniques for exploration
     #       (Plan2Explore, etc)
 
-    policy_agent = hydra.utils.instantiate(cfg.agent,
+    agent = hydra.utils.instantiate(cfg.agent,
                             obs_space_num=env.observation_space.shape[0],
                             # FIXME: feels bad
-                            actions_num=(env.action_space.high - env.action_space.low + 1).item(),
+                            # actions_num=(env.action_space.high - env.action_space.low + 1).item(),
+                            # FIXME: currently only continuous tasks
+                            actions_num=env.action_space.shape[0],
+                            action_type='continuous',
                             device_type=cfg.device_type)
-    agent = ExplorativeAgent(
-               policy_agent,
-                # TODO: For dreamer, add noise for sampling instead
-                # of just random actions
-               RandomAgent(env),
-               LinearScheduler(0.9, 0.01, 5_000))
+    # agent = ExplorativeAgent(
+    #            policy_agent,
+    #             # TODO: For dreamer, add noise for sampling instead
+    #             # of just random actions
+    #            RandomAgent(env),
+    #            LinearScheduler(0.9, 0.01, 5_000))
     writer = SummaryWriter()
 
     prof = profile(activities=[ProfilerActivity.CUDA, ProfilerActivity.CPU],
@@ -55,12 +70,29 @@ def main(cfg: DictConfig):
                  schedule=torch.profiler.schedule(wait=10, warmup=10, active=5, repeat=5),
                  with_stack=True) if cfg.debug.profiler else None
 
-    for i in tqdm(range(cfg.training.pretrain), desc='Pretraining'):
+    for i in tqdm(range(int(cfg.training.pretrain)), desc='Pretraining'):
         s, a, r, n, f = buff.sample(cfg.training.batch_size,
                                     cluster_size=cfg.agent.get('batch_cluster_size', 1))
         losses = agent.train(s, a, r, n, f)
         for loss_name, loss in losses.items():
             writer.add_scalar(f'pre_train/{loss_name}', loss, i)
+
+        # if cfg.training.pretrain > 0:
+        if i % 2e2 == 0:
+            rollouts = collect_rollout_num(env, cfg.validation.rollout_num, agent)
+            # TODO: make logs visualization in separate process
+            metrics = metrics_evaluator.calculate_metrics(rollouts)
+            for metric_name, metric in metrics.items():
+                writer.add_scalar(f'val/{metric_name}', metric, -10 + i/100)
+
+            if cfg.validation.visualize:
+                rollouts = collect_rollout_num(env, 1, agent, collect_obs=True)
+
+                for rollout in rollouts:
+                    video = np.expand_dims(rollout.observations.transpose(0, 3, 1, 2), 0)
+                    writer.add_video('val/visualization', video, -10 + i/100)
+                    # FIXME: Very bad from architecture point
+                    agent.viz_log(rollout, writer, -10 + i/100)
 
     global_step = 0
     pbar = tqdm(total=cfg.training.steps, desc='Training')
@@ -87,7 +119,8 @@ def main(cfg: DictConfig):
 
         ### Validation
         if global_step % cfg.training.val_logs_every == 0:
-            rollouts = collect_rollout_num(env, cfg.validation.rollout_num, agent)
+            with torch.no_grad():
+                rollouts = collect_rollout_num(env, cfg.validation.rollout_num, agent)
             # TODO: make logs visualization in separate process
             metrics = metrics_evaluator.calculate_metrics(rollouts)
             for metric_name, metric in metrics.items():
@@ -100,7 +133,8 @@ def main(cfg: DictConfig):
                     video = np.expand_dims(rollout.observations.transpose(0, 3, 1, 2), 0)
                     writer.add_video('val/visualization', video, global_step)
                     # FIXME: Very bad from architecture point
-                    agent.policy_ag.viz_log(rollout, writer, global_step)
+                    with torch.no_grad():
+                        agent.viz_log(rollout, writer, global_step)
 
         ### Checkpoint
         if global_step % cfg.training.save_checkpoint_every == 0:
