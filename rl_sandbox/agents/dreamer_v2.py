@@ -313,12 +313,12 @@ class WorldModel(nn.Module):
         b, _, h, w = obs.shape  # s <- BxHxWx3
 
         embed = self.encoder(obs)
-        embed_c = embed.reshape(self.cluster_size, b // self.cluster_size, -1)
+        embed_c = embed.reshape(b // self.cluster_size, self.cluster_size, -1)
 
-        obs_c = obs.reshape(self.cluster_size, -1, 3, h, w)
-        a_c = a.reshape(self.cluster_size, -1, self.actions_num)
-        r_c = r.reshape(self.cluster_size, -1, 1)
-        f_c = is_finished.reshape(self.cluster_size, -1, 1)
+        obs_c = obs.reshape(-1, self.cluster_size, 3, h, w)
+        a_c = a.reshape(-1, self.cluster_size, self.actions_num)
+        r_c = r.reshape(-1, self.cluster_size, 1)
+        f_c = is_finished.reshape(-1, self.cluster_size, 1)
 
         h_prev = None
         losses = defaultdict(lambda: torch.zeros(1).to(next(self.parameters()).device))
@@ -344,16 +344,16 @@ class WorldModel(nn.Module):
 
         for t in range(self.cluster_size):
             # s_t <- 1xB^xHxWx3
-            x_t, embed_t, a_t, r_t, f_t = obs_c[t], embed_c[t].unsqueeze(
-                0), a_c[t].unsqueeze(0), r_c[t], f_c[t]
+            x_t, embed_t, a_t, r_t, f_t = obs_c[:, t], embed_c[:, t].unsqueeze(
+                    0), a_c[:, t].unsqueeze(0), r_c[:, t], f_c[:, t]
 
             determ_t, prior_stoch_logits, posterior_stoch_logits = self.recurrent_model.forward(
                 h_prev, embed_t, a_t)
             posterior_stoch = Dist(posterior_stoch_logits).rsample().reshape(
                 -1, self.latent_dim * self.latent_classes)
 
-            inp_t = torch.concat([determ_t.squeeze(0), posterior_stoch], dim=-1)
-            x_r = self.image_predictor(inp_t)
+            # inp_t = torch.concat([determ_t.squeeze(0), posterior_stoch], dim=-1)
+            # x_r = self.image_predictor(inp_t)
             # inps.append(inp_t)
             # reconstructed.append(x_r)
             #losses['loss_reconstruction'] += nn.functional.mse_loss(x_t, x_r)
@@ -367,10 +367,10 @@ class WorldModel(nn.Module):
             posterior_logits.append(posterior_stoch_logits)
 
         # inp = torch.concat([determ_vars.squeeze(0), posterior_stoch], dim=1)
-        inp = torch.concat([torch.stack(determ_vars), torch.stack(latent_vars)], dim=-1)
+        inp = torch.concat([torch.stack(determ_vars, dim=1), torch.stack(latent_vars, dim=1)], dim=-1)
         r_pred = self.reward_predictor(inp)
         f_pred = self.discount_predictor(inp)
-        # x_r = self.image_predictor(inp)
+        x_r = self.image_predictor(torch.flatten(inp, 0, 1))
 
         losses['loss_reconstruction'] += F.mse_loss(x_r, obs) * 32
         #losses['loss_reward_pred'] += F.mse_loss(r, r_pred)
@@ -379,9 +379,10 @@ class WorldModel(nn.Module):
         losses['loss_reward_pred'] += -r_pred.log_prob(r_c).mean()
         losses['loss_discount_pred'] += -f_pred.log_prob(f_c.type(torch.float32)).mean()
         # NOTE: entropy can be added as metric
-        losses['loss_kl_reg'] += KL(torch.concat(prior_logits), torch.concat(posterior_logits), False)
+        losses['loss_kl_reg'] += KL(torch.flatten(torch.stack(prior_logits, dim=1), 0, 1),
+                                    torch.flatten(torch.stack(posterior_logits, dim=1), 0, 1), False)
 
-        return losses, torch.stack(latent_vars).reshape(-1, self.latent_dim * self.latent_classes).detach()
+        return losses, torch.stack(latent_vars, dim=1).reshape(-1, self.latent_dim * self.latent_classes).detach()
 
 
 class ImaginativeCritic(nn.Module):

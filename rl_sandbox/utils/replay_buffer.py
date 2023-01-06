@@ -87,19 +87,11 @@ class ReplayBuffer:
         s, a, r, n, t = [], [], [], [], []
         do_add_curr = self.curr_rollout is not None and len(self.curr_rollout.states) > cluster_size
         tot = self.total_num + (len(self.curr_rollout.states) if do_add_curr else 0)
-
-        # FIXME: rewrite sizes
-        obs_batch = np.empty([seq_num, cluster_size, *(64, 64, 3)], dtype=np.uint8)
-        next_obs_batch = np.empty([seq_num, cluster_size, *(64, 64, 3)], dtype=np.uint8)
-        act_batch = np.empty([seq_num, cluster_size, 1], dtype=np.float32)
-        rew_batch = np.empty([seq_num, cluster_size], dtype=np.float32)
-        term_batch = np.empty([seq_num, cluster_size], dtype=bool)
-
         r_indeces = np.random.choice(len(self.rollouts) + int(do_add_curr),
                                      seq_num,
                                      p=np.array(self.rollouts_len + deque([len(self.curr_rollout.states)] if do_add_curr else [])) / tot)
         s_indeces = []
-        for batch_idx, r_idx in enumerate(r_indeces):
+        for r_idx in r_indeces:
             if r_idx != len(self.rollouts):
                 rollout, r_len = self.rollouts[r_idx], self.rollouts_len[r_idx]
             else:
@@ -118,22 +110,15 @@ class ReplayBuffer:
             else:
                 actions = rollout.actions[s_idx:s_idx + cluster_size]
 
-            obs_batch[batch_idx, :] = rollout.states[s_idx:s_idx + cluster_size]
-            act_batch[batch_idx, :] = actions
-            rew_batch[batch_idx, :] = rollout.rewards[s_idx:s_idx + cluster_size]
-            term_batch[batch_idx, :] = rollout.is_finished[s_idx:s_idx + cluster_size]
+            s.append(rollout.states[s_idx:s_idx + cluster_size])
+            a.append(rollout.actions[s_idx:s_idx + cluster_size])
+            r.append(rollout.rewards[s_idx:s_idx + cluster_size])
+            t.append(rollout.is_finished[s_idx:s_idx + cluster_size])
             if s_idx != r_len - cluster_size:
-                next_obs_batch[batch_idx, :] = rollout.states[s_idx+1:s_idx+1 + cluster_size]
+                n.append(rollout.states[s_idx+1:s_idx+1 + cluster_size])
             else:
-                next_obs_batch[batch_idx, :] = np.concatenate([rollout.states[s_idx+1:s_idx+1 + cluster_size - 1],
-                                                               rollout.next_states])
-                # if cluster_size != 1:
-                    # n.append(rollout.states[s_idx+1:s_idx+1 + cluster_size - 1])
-                # n.append(rollout.next_states)
-        return (obs_batch.reshape(batch_size, 64, 64, 3),
-               act_batch.reshape(batch_size, 1),
-               rew_batch.reshape(batch_size),
-               next_obs_batch.reshape(batch_size, 64, 64, 3),
-               term_batch.reshape(batch_size))
-        # return (np.concatenate(s), np.concatenate(a), np.concatenate(r, dtype=np.float32),
-        #     np.concatenate(n), np.concatenate(t))
+                if cluster_size != 1:
+                    n.append(rollout.states[s_idx+1:s_idx+1 + cluster_size - 1])
+                n.append(rollout.next_states)
+        return (np.concatenate(s), np.concatenate(a), np.concatenate(r, dtype=np.float32),
+            np.concatenate(n), np.concatenate(t))
