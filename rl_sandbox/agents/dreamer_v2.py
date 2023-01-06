@@ -356,8 +356,8 @@ class WorldModel(nn.Module):
             x_r = self.image_predictor(inp_t)
             # inps.append(inp_t)
             # reconstructed.append(x_r)
-            losses['loss_reconstruction'] += nn.functional.mse_loss(x_t, x_r)
-            losses['loss_kl_reg'] += KL(prior_stoch_logits, posterior_stoch_logits)
+            #losses['loss_reconstruction'] += nn.functional.mse_loss(x_t, x_r)
+            #losses['loss_kl_reg'] += KL(prior_stoch_logits, posterior_stoch_logits)
 
             h_prev = [determ_t, posterior_stoch.unsqueeze(0)]
             determ_vars.append(determ_t.squeeze(0))
@@ -372,14 +372,14 @@ class WorldModel(nn.Module):
         f_pred = self.discount_predictor(inp)
         # x_r = self.image_predictor(inp)
 
-        # losses['loss_reconstruction'] += F.mse_loss(x_r, obs) * 32
-        # losses['loss_reward_pred'] += F.mse_loss(r, r_pred)
-        # losses['loss_discount_pred'] += F.binary_cross_entropy_with_logits(is_finished.type(torch.float32), f_pred)
+        losses['loss_reconstruction'] += F.mse_loss(x_r, obs) * 32
+        #losses['loss_reward_pred'] += F.mse_loss(r, r_pred)
+        #losses['loss_discount_pred'] += F.binary_cross_entropy_with_logits(is_finished.type(torch.float32), f_pred)
         # losses['loss_reconstruction'] += -x_r.log_prob(obs).mean()
-        # losses['loss_reward_pred'] += -r_pred.log_prob(r_c).mean()
-        # losses['loss_discount_pred'] += -f_pred.log_prob(f_c.type(torch.float32)).mean()
+        losses['loss_reward_pred'] += -r_pred.log_prob(r_c).mean()
+        losses['loss_discount_pred'] += -f_pred.log_prob(f_c.type(torch.float32)).mean()
         # NOTE: entropy can be added as metric
-        # losses['loss_kl_reg'] += KL(torch.concat(prior_logits), torch.concat(posterior_logits), False)
+        losses['loss_kl_reg'] += KL(torch.concat(prior_logits), torch.concat(posterior_logits), False)
 
         return losses, torch.stack(latent_vars).reshape(-1, self.latent_dim * self.latent_classes).detach()
 
@@ -534,6 +534,7 @@ class DreamerV2(RlAgent):
         # Swap channel from last to 3 from last
         order = order[:-3] + [order[-1]] + order[-3:-1]
         return ((obs.type(torch.float32) / 255.0) - 0.5).permute(order)
+        # return obs.type(torch.float32).permute(order)
 
     def get_action(self, obs: Observation) -> Action:
         # NOTE: pytorch fails without .copy() only when get_action is called

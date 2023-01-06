@@ -118,15 +118,14 @@ class ReplayBuffer:
             else:
                 actions = rollout.actions[s_idx:s_idx + cluster_size]
 
-            obs_batch[:, batch_idx] = rollout.states[s_idx:s_idx + cluster_size]
-            act_batch[:, batch_idx] = actions
-            rew_batch[:, batch_idx] = np.arange(32)
-            # rew_batch[:, batch_idx] = rollout.rewards[s_idx:s_idx + cluster_size]
-            term_batch[:, batch_idx] = rollout.is_finished[s_idx:s_idx + cluster_size]
+            obs_batch[batch_idx, :] = rollout.states[s_idx:s_idx + cluster_size]
+            act_batch[batch_idx, :] = actions
+            rew_batch[batch_idx, :] = rollout.rewards[s_idx:s_idx + cluster_size]
+            term_batch[batch_idx, :] = rollout.is_finished[s_idx:s_idx + cluster_size]
             if s_idx != r_len - cluster_size:
-                next_obs_batch[:, batch_idx] = rollout.states[s_idx+1:s_idx+1 + cluster_size]
+                next_obs_batch[batch_idx, :] = rollout.states[s_idx+1:s_idx+1 + cluster_size]
             else:
-                next_obs_batch[:, batch_idx] = np.concatenate([rollout.states[s_idx+1:s_idx+1 + cluster_size - 1],
+                next_obs_batch[batch_idx, :] = np.concatenate([rollout.states[s_idx+1:s_idx+1 + cluster_size - 1],
                                                                rollout.next_states])
                 # if cluster_size != 1:
                     # n.append(rollout.states[s_idx+1:s_idx+1 + cluster_size - 1])
