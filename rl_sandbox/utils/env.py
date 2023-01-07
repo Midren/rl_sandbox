@@ -157,6 +157,32 @@ class GymEnv(Env):
     def _action_space(self):
         return self.env.action_space
 
+class MockEnv(Env):
+
+    def __init__(self, run_on_pixels: bool,
+                 obs_res: tuple[int, int], repeat_action_num: int,
+                 transforms: list[ActionTransformer]):
+        super().__init__(run_on_pixels, obs_res, repeat_action_num, transforms)
+        self.max_steps = 255
+        self.step_count = 0
+
+    def _step(self, action: Action, repeat_num: int) -> EnvStepResult:
+        self.step_count += repeat_num
+        return EnvStepResult(self.render(), self.step_count, self.step_count >= self.max_steps)
+
+    def reset(self):
+        self.step_count = 0
+        return EnvStepResult(self.render(), 0, False)
+
+    def render(self):
+        return np.ones(self.obs_res + (3, )) * self.step_count
+
+    def _observation_space(self):
+        return gym.spaces.Box(0, 255, self.obs_res + (3, ), dtype=np.uint8)
+
+    def _action_space(self):
+        return gym.spaces.Box(-1, 1, (1, ), dtype=np.float32)
+
 
 class DmEnv(Env):
 
