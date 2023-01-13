@@ -77,22 +77,23 @@ def main(cfg: DictConfig):
         for loss_name, loss in losses.items():
             writer.add_scalar(f'pre_train/{loss_name}', loss, i)
 
-        # if cfg.training.pretrain > 0:
-        if i % 2e2 == 0:
+        log_every_n = 25
+        st = int(cfg.training.pretrain) // log_every_n
+        if i % log_every_n == 0:
             rollouts = collect_rollout_num(env, cfg.validation.rollout_num, agent)
             # TODO: make logs visualization in separate process
             metrics = metrics_evaluator.calculate_metrics(rollouts)
             for metric_name, metric in metrics.items():
-                writer.add_scalar(f'val/{metric_name}', metric, -10 + i/100)
+                writer.add_scalar(f'val/{metric_name}', metric, -st + i/log_every_n)
 
             if cfg.validation.visualize:
                 rollouts = collect_rollout_num(env, 1, agent, collect_obs=True)
 
                 for rollout in rollouts:
                     video = np.expand_dims(rollout.observations.transpose(0, 3, 1, 2), 0)
-                    writer.add_video('val/visualization', video, -10 + i/100)
+                    writer.add_video('val/visualization', video, -st + i/log_every_n)
                     # FIXME: Very bad from architecture point
-                    agent.viz_log(rollout, writer, -10 + i/100)
+                    agent.viz_log(rollout, writer, -st + i/log_every_n)
 
     global_step = 0
     pbar = tqdm(total=cfg.training.steps, desc='Training')
@@ -117,6 +118,7 @@ def main(cfg: DictConfig):
             global_step += cfg.env.repeat_action_num
             pbar.update(cfg.env.repeat_action_num)
 
+        # FIXME: Currently works only val_logs_every is multiplier of amount of steps per rollout
         ### Validation
         if global_step % cfg.training.val_logs_every == 0:
             with torch.no_grad():

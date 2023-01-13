@@ -10,7 +10,7 @@ device_type: cuda
 training:
   steps: 5e5
   prefill: 1000
-  pretrain: 1e3
+  pretrain: 100
   batch_size: 1024
   gradient_steps_per_step: 5
   save_checkpoint_every: 1e5

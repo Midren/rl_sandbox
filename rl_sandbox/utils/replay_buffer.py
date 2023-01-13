@@ -111,7 +111,7 @@ class ReplayBuffer:
                 actions = rollout.actions[s_idx:s_idx + cluster_size]
 
             s.append(rollout.states[s_idx:s_idx + cluster_size])
-            a.append(rollout.actions[s_idx:s_idx + cluster_size])
+            a.append(actions)
             r.append(rollout.rewards[s_idx:s_idx + cluster_size])
             t.append(rollout.is_finished[s_idx:s_idx + cluster_size])
             if s_idx != r_len - cluster_size:

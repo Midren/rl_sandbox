@@ -4,7 +4,7 @@ batch_cluster_size: 32
 latent_dim: 32
 latent_classes: 32
 rssm_dim: 200 
-kl_loss_scale: 0.1
+kl_loss_scale: 1.0
 kl_loss_balancing: 0.8
 kl_loss_free_nats: 1.0
 world_model_lr: 3e-4
