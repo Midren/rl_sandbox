@@ -112,8 +112,10 @@ def main(cfg: DictConfig):
                 losses = agent.train(s, a, r, n, f)
                 if cfg.debug.profiler:
                     prof.step()
-                for loss_name, loss in losses.items():
-                    writer.add_scalar(f'train/{loss_name}', loss, global_step)
+                # NOTE: Do not forget to run test with every step to check for outliers
+                if global_step % 10 == 0:
+                    for loss_name, loss in losses.items():
+                        writer.add_scalar(f'train/{loss_name}', loss, global_step)
             global_step += cfg.env.repeat_action_num
             pbar.update(cfg.env.repeat_action_num)
 
