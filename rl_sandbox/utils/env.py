@@ -227,7 +227,7 @@ class DmEnv(Env):
             return gym.spaces.Box(0, 255, self.obs_res + (3, ), dtype=np.uint8)
         else:
             raise NotImplementedError(
-                "Currently run on pixels is supported for 'dm_control'")
+                "Currently run on pixels is only supported for 'dm_control'")
         # for space in self.env.observation_spec():
         # obs_space_num = sum([v.shape[0] for v in env.observation_space().values()])
 

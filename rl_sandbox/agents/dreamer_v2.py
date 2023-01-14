@@ -348,13 +348,6 @@ class WorldModel(nn.Module):
             posterior_stoch = Dist(posterior_stoch_logits).rsample().reshape(
                 -1, self.latent_dim * self.latent_classes)
 
-            # inp_t = torch.concat([determ_t.squeeze(0), posterior_stoch], dim=-1)
-            # x_r = self.image_predictor(inp_t)
-            # inps.append(inp_t)
-            # reconstructed.append(x_r)
-            #losses['loss_reconstruction'] += nn.functional.mse_loss(x_t, x_r)
-            #losses['loss_kl_reg'] += KL(prior_stoch_logits, posterior_stoch_logits)
-
             h_prev = [determ_t, posterior_stoch.unsqueeze(0)]
             determ_vars.append(determ_t.squeeze(0))
             latent_vars.append(posterior_stoch)
@@ -392,13 +385,13 @@ class ImaginativeCritic(nn.Module):
         self.critic = fc_nn_generator(latent_dim,
                                       1,
                                       400,
-                                      1,
+                                      4,
                                       intermediate_activation=nn.ELU,
                                       final_activation=DistLayer('mse'))
         self.target_critic = fc_nn_generator(latent_dim,
                                              1,
                                              400,
-                                             1,
+                                             4,
                                              intermediate_activation=nn.ELU,
                                              final_activation=DistLayer('mse'))
 
@@ -676,8 +669,10 @@ class DreamerV2(RlAgent):
         self.scaler.step(self.world_model_optimizer)
 
         with torch.cuda.amp.autocast(enabled=True):
-            idx = torch.randperm(discovered_latents.size(0))
-            initial_states = discovered_latents[idx]
+            # idx = torch.randperm(discovered_latents.size(0))
+            # initial_states = discovered_latents[idx]
+            # Dreamer does not shuffle
+            initial_states = discovered_latents
 
             losses_ac = defaultdict(
                 lambda: torch.zeros(1).to(next(self.critic.parameters()).device))
@@ -685,17 +680,20 @@ class DreamerV2(RlAgent):
             zs, action_dists, next_zs, rewards, discount_factors, _ = self.imagine_trajectory(
                 initial_states)
 
+            # Discount prediction is disabled for dmc vision in Dreamer
+            discount_factors = self.critic.gamma * torch.zeros_like(rewards)
+
             # Ignore all factors after first is_finished state
-            discount_factors = torch.cumprod(discount_factors, dim=1)
+            discount_factors = torch.cumprod(discount_factors, dim=1).detach()
 
             # Discounted factors should be shifted as they predict whether next state is terminal
             # First discount factor on contrary is always 1 as it cannot lead to trajectory finish
             discount_factors = torch.cat([torch.ones_like(discount_factors[:1, :]), discount_factors[:-1, :]], dim=0)
 
-            vs = self.critic.lambda_return(next_zs, rewards, discount_factors)
+            vs = self.critic.lambda_return(next_zs, rewards, discount_factors).detach()
 
             losses_ac['loss_critic'] = -(self.critic.estimate_value(next_zs.detach()).log_prob(
-                vs[:-1].detach()).unsqueeze(-1) * discount_factors).mean()
+                vs).unsqueeze(-1) * discount_factors).mean()
 
             # last action should be ignored as it is not used to predict next state, thus no feedback
             # first value should be ignored as it is comes from replay buffer
