@@ -5,9 +5,9 @@ from collections import defaultdict
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.distributions as td
 from torch import nn
 from torch.nn import functional as F
-import torch.distributions as td
 
 from rl_sandbox.agents.rl_agent import RlAgent
 from rl_sandbox.utils.fc_nn import fc_nn_generator
@@ -393,12 +393,14 @@ class ImaginativeCritic(nn.Module):
                                       1,
                                       400,
                                       1,
-                                      intermediate_activation=nn.ELU)
+                                      intermediate_activation=nn.ELU,
+                                      final_activation=DistLayer('mse'))
         self.target_critic = fc_nn_generator(latent_dim,
                                              1,
                                              400,
                                              1,
-                                             intermediate_activation=nn.ELU)
+                                             intermediate_activation=nn.ELU,
+                                             final_activation=DistLayer('mse'))
 
     def update_target(self):
         if self._update_num == 0:
@@ -409,7 +411,7 @@ class ImaginativeCritic(nn.Module):
                                         (1 - mix) * target_param.data)
         self._update_num = (self._update_num + 1) % self.critic_update_interval
 
-    def estimate_value(self, z) -> torch.Tensor:
+    def estimate_value(self, z) -> td.Distribution:
         return self.critic(z)
 
     def _lambda_return(self, vs: torch.Tensor, rs: torch.Tensor, ds: torch.Tensor):
@@ -423,7 +425,7 @@ class ImaginativeCritic(nn.Module):
         return torch.stack(list(reversed(v_lambdas)))
 
     def lambda_return(self, zs, rs, ds):
-        vs = self.target_critic(zs).detach()
+        vs = self.target_critic(zs).rsample().detach()
         return self._lambda_return(vs, rs, ds)
 
 
@@ -510,9 +512,6 @@ class DreamerV2(RlAgent):
                 a = a_dist.rsample()
             world_state, next_z, reward, discount = self.world_model.predict_next(
                 z, a, world_state)
-            # FIXME:
-            # discount factors should be shifted, as they imply whether the following state
-            # will be valid, not whether the current state is valid.
 
             zs.append(z)
             actions.append(a_dist)
@@ -655,7 +654,7 @@ class DreamerV2(RlAgent):
         discount_factors = (1 - self.from_np(is_finished).type(torch.float32))
 
         # take some latent embeddings as initial
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.cuda.amp.autocast(enabled=True):
             losses, discovered_latents = self.world_model.calculate_loss(
                 next_obs, a, r, discount_factors)
 
@@ -676,7 +675,7 @@ class DreamerV2(RlAgent):
         nn.utils.clip_grad_norm_(self.world_model.parameters(), 100)
         self.scaler.step(self.world_model_optimizer)
 
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.cuda.amp.autocast(enabled=True):
             idx = torch.randperm(discovered_latents.size(0))
             initial_states = discovered_latents[idx]
 
@@ -685,17 +684,28 @@ class DreamerV2(RlAgent):
 
             zs, action_dists, next_zs, rewards, discount_factors, _ = self.imagine_trajectory(
                 initial_states)
+
+            # Ignore all factors after first is_finished state
+            discount_factors = torch.cumprod(discount_factors, dim=1)
+
+            # Discounted factors should be shifted as they predict whether next state is terminal
+            # First discount factor on contrary is always 1 as it cannot lead to trajectory finish
+            discount_factors = torch.cat([torch.ones_like(discount_factors[:1, :]), discount_factors[:-1, :]], dim=0)
+
             vs = self.critic.lambda_return(next_zs, rewards, discount_factors)
 
-            losses_ac['loss_critic'] = F.mse_loss(self.critic.estimate_value(next_zs.detach()),
-                                                  vs.detach(),
-                                                  reduction='sum') / zs.shape[1]
+            losses_ac['loss_critic'] = -(self.critic.estimate_value(next_zs.detach()).log_prob(
+                vs[:-1].detach()).unsqueeze(-1) * discount_factors).mean()
+
+            # last action should be ignored as it is not used to predict next state, thus no feedback
+            # first value should be ignored as it is comes from replay buffer
             losses_ac['loss_actor_reinforce'] += 0  # unused in dm_control
             losses_ac['loss_actor_dynamics_backprop'] = -(
-                (1 - self.rho) * vs).sum() / zs.shape[1]
+                    (1 - self.rho) * (vs[1:-1]*discount_factors[1:-1])).mean()
             # FIXME: Is it correct to use normal entropy with Tanh transformation
-            losses_ac['loss_actor_entropy'] = -self.eta * torch.stack(
-                [a.base_dist.base_dist.entropy() for a in action_dists[:-1]]).sum() / zs.shape[1]
+            losses_ac['loss_actor_entropy'] = -(self.eta *
+                torch.stack([a.base_dist.base_dist.entropy() for a in action_dists[:-1]]) * discount_factors[-1]).mean()
+
             losses_ac['loss_actor'] += losses_ac['loss_actor_reinforce'] + losses_ac[
                 'loss_actor_dynamics_backprop'] + losses_ac['loss_actor_entropy']
 
