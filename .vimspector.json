@@ -39,7 +39,7 @@
     "Run main": {
       "extends": "python-base",
       "configuration": {
-        "program": "main.py",
+        "program": "rl_sandbox/train.py",
         "args": []
       }
     }

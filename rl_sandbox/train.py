@@ -4,6 +4,7 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.tensorboard.writer import SummaryWriter
 from tqdm import tqdm
 from pathlib import Path
+import random
 
 import torch
 from torch.profiler import profile, record_function, ProfilerActivity
@@ -14,7 +15,7 @@ from rl_sandbox.metrics import MetricsEvaluator
 from rl_sandbox.utils.env import Env
 from rl_sandbox.utils.replay_buffer import ReplayBuffer
 from rl_sandbox.utils.persistent_replay_buffer import PersistentReplayBuffer
-from rl_sandbox.utils.rollout_generation import (collect_rollout, collect_rollout_num, iter_rollout, iter_rollout_async,
+from rl_sandbox.utils.rollout_generation import (collect_rollout, collect_rollout_num, iter_rollout,
                                                  fillup_replay_buffer)
 from rl_sandbox.utils.schedulers import LinearScheduler
 
@@ -37,10 +38,12 @@ def main(cfg: DictConfig):
     torch.backends.cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = True
 
+    random.seed(cfg.seed)
+    torch.manual_seed(cfg.seed)
+    np.random.seed(cfg.seed)
+
     env: Env = hydra.utils.instantiate(cfg.env)
 
-    # TODO: add replay buffer implementation, which stores rollouts
-    #       on disk
     buff = ReplayBuffer()
     fillup_replay_buffer(env, buff, max(cfg.training.prefill, cfg.training.batch_size))
 
@@ -48,7 +51,6 @@ def main(cfg: DictConfig):
 
     # TODO: Implement smarter techniques for exploration
     #       (Plan2Explore, etc)
-
     agent = hydra.utils.instantiate(cfg.agent,
                             obs_space_num=env.observation_space.shape[0],
                             # FIXME: feels bad
@@ -57,12 +59,7 @@ def main(cfg: DictConfig):
                             actions_num=env.action_space.shape[0],
                             action_type='continuous',
                             device_type=cfg.device_type)
-    # agent = ExplorativeAgent(
-    #            policy_agent,
-    #             # TODO: For dreamer, add noise for sampling instead
-    #             # of just random actions
-    #            RandomAgent(env),
-    #            LinearScheduler(0.9, 0.01, 5_000))
+
     writer = SummaryWriter()
 
     prof = profile(activities=[ProfilerActivity.CUDA, ProfilerActivity.CPU],
@@ -79,6 +76,8 @@ def main(cfg: DictConfig):
 
         log_every_n = 25
         st = int(cfg.training.pretrain) // log_every_n
+        # FIXME: extract logging to seperate entity to omit
+        # copy-paste
         if i % log_every_n == 0:
             rollouts = collect_rollout_num(env, cfg.validation.rollout_num, agent)
             # TODO: make logs visualization in separate process

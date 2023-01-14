@@ -7,10 +7,7 @@ name = 'rl_sandbox'
 version = "0.1.0"
 description = 'Sandbox for my RL experiments'
 authors = ['Roman Milishchuk <milishchuk.roman@gmail.com>']
-packages = [{include = 'rl_sandbox', exclude = 'rl_sandbox.test*'}]
-
-[tool.poetry.scripts]
-my-script = ['rl_sandbox.train:main']
+packages = [{include = 'rl_sandbox'}]
 
 [tool.poetry.dependencies]
 python = "^3.10"
