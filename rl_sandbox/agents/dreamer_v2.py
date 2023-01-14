@@ -298,8 +298,8 @@ class WorldModel(nn.Module):
             -1, self.latent_dim * self.latent_classes)
         reward = self.reward_predictor(
             torch.concat([determ_state.squeeze(0), next_repr], dim=1)).rsample()
-        is_finished = self.discount_predictor(torch.concat([determ_state.squeeze(0), next_repr], dim=1)).sample()
-        return determ_state, next_repr, reward, is_finished
+        discount_factors = self.discount_predictor(torch.concat([determ_state.squeeze(0), next_repr], dim=1)).sample()
+        return determ_state, next_repr, reward, discount_factors
 
     def get_latent(self, obs: torch.Tensor, action, state):
         embed = self.encoder(obs)
@@ -308,7 +308,7 @@ class WorldModel(nn.Module):
         return determ, latent_repr_logits
 
     def calculate_loss(self, obs: torch.Tensor, a: torch.Tensor, r: torch.Tensor,
-                       is_finished: torch.Tensor):
+                       discount: torch.Tensor):
         b, _, h, w = obs.shape  # s <- BxHxWx3
 
         embed = self.encoder(obs)
@@ -317,7 +317,7 @@ class WorldModel(nn.Module):
         obs_c = obs.reshape(-1, self.cluster_size, 3, h, w)
         a_c = a.reshape(-1, self.cluster_size, self.actions_num)
         r_c = r.reshape(-1, self.cluster_size, 1)
-        f_c = is_finished.reshape(-1, self.cluster_size, 1)
+        d_c = discount.reshape(-1, self.cluster_size, 1)
 
         h_prev = None
         losses = defaultdict(lambda: torch.zeros(1).to(next(self.parameters()).device))
@@ -341,7 +341,7 @@ class WorldModel(nn.Module):
         for t in range(self.cluster_size):
             # s_t <- 1xB^xHxWx3
             x_t, embed_t, a_t, r_t, f_t = obs_c[:, t], embed_c[:, t].unsqueeze(
-                    0), a_c[:, t].unsqueeze(0), r_c[:, t], f_c[:, t]
+                    0), a_c[:, t].unsqueeze(0), r_c[:, t], d_c[:, t]
 
             determ_t, prior_stoch_logits, posterior_stoch_logits = self.recurrent_model.forward(
                 h_prev, embed_t, a_t)
@@ -370,7 +370,7 @@ class WorldModel(nn.Module):
 
         losses['loss_reconstruction'] += -x_r.log_prob(obs).mean()
         losses['loss_reward_pred'] += -r_pred.log_prob(r_c).mean()
-        losses['loss_discount_pred'] += -f_pred.log_prob(f_c.type(torch.float32)).mean()
+        losses['loss_discount_pred'] += -f_pred.log_prob(d_c).mean()
         # NOTE: entropy can be added as metric
         losses['loss_kl_reg'] += KL(torch.flatten(torch.stack(prior_logits, dim=1), 0, 1),
                                     torch.flatten(torch.stack(posterior_logits, dim=1), 0, 1))
@@ -381,8 +381,7 @@ class WorldModel(nn.Module):
 class ImaginativeCritic(nn.Module):
 
     def __init__(self, discount_factor: float, update_interval: int,
-                 soft_update_fraction: float, value_target_lambda: float, latent_dim: int,
-                 actions_num: int):
+                 soft_update_fraction: float, value_target_lambda: float, latent_dim: int):
         super().__init__()
         self.gamma = discount_factor
         self.critic_update_interval = update_interval
@@ -413,15 +412,19 @@ class ImaginativeCritic(nn.Module):
     def estimate_value(self, z) -> torch.Tensor:
         return self.critic(z)
 
-    def lambda_return(self, zs, rs, ts):
-        v_lambdas = [self.target_critic(zs[-1])]
-        for i in range(zs.shape[0] - 2, -1, -1):
-            v_lambda = rs[i] + ts[i] * self.gamma * (
-                (1 - self.lambda_) * self.target_critic(zs[i]).detach() +
+    def _lambda_return(self, vs: torch.Tensor, rs: torch.Tensor, ds: torch.Tensor):
+        v_lambdas = [rs[-1] + self.gamma*vs[-1]]
+        for i in range(vs.shape[0] - 2, -1, -1):
+            v_lambda = rs[i] + ds[i] * self.gamma * (
+                (1 - self.lambda_) * vs[i] +
                 self.lambda_ * v_lambdas[-1])
             v_lambdas.append(v_lambda)
 
         return torch.stack(list(reversed(v_lambdas)))
+
+    def lambda_return(self, zs, rs, ds):
+        vs = self.target_critic(zs).detach()
+        return self._lambda_return(vs, rs, ds)
 
 
 class DreamerV2(RlAgent):
@@ -472,8 +475,7 @@ class DreamerV2(RlAgent):
         self.critic = ImaginativeCritic(discount_factor, critic_update_interval,
                                         critic_soft_update_fraction,
                                         critic_value_target_lambda,
-                                        latent_dim * latent_classes,
-                                        actions_num).to(device_type)
+                                        latent_dim * latent_classes).to(device_type)
 
         self.scaler = torch.cuda.amp.GradScaler()
         self.world_model_optimizer = torch.optim.AdamW(self.world_model.parameters(),
@@ -501,20 +503,22 @@ class DreamerV2(RlAgent):
         z = z_0.detach()
         for i in range(horizon):
             if precomp_actions is not None:
+                a_dist = None
                 a = precomp_actions[i].unsqueeze(0)
             else:
-                a = self.actor(z).rsample()
-            world_state, next_z, reward, is_finished = self.world_model.predict_next(
+                a_dist = self.actor(z)
+                a = a_dist.rsample()
+            world_state, next_z, reward, discount = self.world_model.predict_next(
                 z, a, world_state)
             # FIXME:
-            # is_finished should be shifted, as they imply whether the following state
+            # discount factors should be shifted, as they imply whether the following state
             # will be valid, not whether the current state is valid.
 
             zs.append(z)
-            actions.append(a)
+            actions.append(a_dist)
             next_zs.append(next_z)
             rewards.append(reward)
-            ts.append(is_finished)
+            ts.append(discount)
             determs.append(world_state[0])
 
             z = next_z.detach()
@@ -594,8 +598,6 @@ class DreamerV2(RlAgent):
             determ, stoch_logits = self.world_model.get_latent(o.unsqueeze(0), a.unsqueeze(0).unsqueeze(0), state)
             z_0 = Dist(stoch_logits).rsample().reshape(-1, 32 * 32).unsqueeze(0)
             state = (determ, z_0)
-            # zs, _, _, _, _, determs = self.imagine_trajectory(z_0.squeeze(0), horizon=1)
-            # video_r = self.world_model.image_predictor(torch.concat([determs, zs], dim=2)).rsample().cpu().detach().numpy()
             video_r = self.world_model.image_predictor(torch.concat([determ, z_0], dim=-1)).mode.cpu().detach().numpy()
             video_r = ((video_r + 0.5) * 255.0).astype(np.uint8)
             video.append(video_r)
@@ -650,12 +652,12 @@ class DreamerV2(RlAgent):
             a = F.one_hot(a, num_classes=self.actions_num).squeeze()
         r = self.from_np(r)
         next_obs = self.preprocess_obs(self.from_np(next_obs))
-        is_finished = self.from_np(is_finished)
+        discount_factors = (1 - self.from_np(is_finished).type(torch.float32))
 
-        # take some latent embeddings as initial step
+        # take some latent embeddings as initial
         with torch.cuda.amp.autocast(enabled=False):
             losses, discovered_latents = self.world_model.calculate_loss(
-                next_obs, a, r, is_finished)
+                next_obs, a, r, discount_factors)
 
             # NOTE: 'aten::nonzero' inside KL divergence is not currently supported on M1 Pro MPS device
             # world_model_loss = torch.Tensor(1).to(next(self.world_model.parameters()).device)
@@ -674,51 +676,50 @@ class DreamerV2(RlAgent):
         nn.utils.clip_grad_norm_(self.world_model.parameters(), 100)
         self.scaler.step(self.world_model_optimizer)
 
-        # with torch.cuda.amp.autocast(enabled=False):
-        #     idx = torch.randperm(discovered_latents.size(0))
-        #     initial_states = discovered_latents[idx]
+        with torch.cuda.amp.autocast(enabled=False):
+            idx = torch.randperm(discovered_latents.size(0))
+            initial_states = discovered_latents[idx]
 
-        #     losses_ac = defaultdict(
-        #         lambda: torch.zeros(1).to(next(self.critic.parameters()).device))
+            losses_ac = defaultdict(
+                lambda: torch.zeros(1).to(next(self.critic.parameters()).device))
 
-        #     zs, action_dists, next_zs, rewards, terminal_flags, _ = self.imagine_trajectory(
-        #         initial_states)
-        #     vs = self.critic.lambda_return(next_zs, rewards, terminal_flags)
+            zs, action_dists, next_zs, rewards, discount_factors, _ = self.imagine_trajectory(
+                initial_states)
+            vs = self.critic.lambda_return(next_zs, rewards, discount_factors)
 
-        #     losses_ac['loss_critic'] = F.mse_loss(self.critic.estimate_value(next_zs.detach()),
-        #                                           vs.detach(),
-        #                                           reduction='sum') / zs.shape[1]
-        #     losses_ac['loss_actor_reinforce'] += 0  # unused in dm_control
-        #     losses_ac['loss_actor_dynamics_backprop'] = -(
-        #         (1 - self.rho) * vs).sum() / zs.shape[1]
-        #     # FIXME: Is it correct to use normal entropy with Tanh transformation
-        #     losses_ac['loss_actor_entropy'] = -self.eta * torch.stack(
-        #         [a.base_dist.base_dist.entropy() for a in action_dists[:-1]]).sum() / zs.shape[1]
-        #     losses_ac['loss_actor'] += losses_ac['loss_actor_reinforce'] + losses_ac[
-        #         'loss_actor_dynamics_backprop'] + losses_ac['loss_actor_entropy']
+            losses_ac['loss_critic'] = F.mse_loss(self.critic.estimate_value(next_zs.detach()),
+                                                  vs.detach(),
+                                                  reduction='sum') / zs.shape[1]
+            losses_ac['loss_actor_reinforce'] += 0  # unused in dm_control
+            losses_ac['loss_actor_dynamics_backprop'] = -(
+                (1 - self.rho) * vs).sum() / zs.shape[1]
+            # FIXME: Is it correct to use normal entropy with Tanh transformation
+            losses_ac['loss_actor_entropy'] = -self.eta * torch.stack(
+                [a.base_dist.base_dist.entropy() for a in action_dists[:-1]]).sum() / zs.shape[1]
+            losses_ac['loss_actor'] += losses_ac['loss_actor_reinforce'] + losses_ac[
+                'loss_actor_dynamics_backprop'] + losses_ac['loss_actor_entropy']
 
-        # self.actor_optimizer.zero_grad(set_to_none=True)
-        # self.critic_optimizer.zero_grad(set_to_none=True)
+        self.actor_optimizer.zero_grad(set_to_none=True)
+        self.critic_optimizer.zero_grad(set_to_none=True)
 
-        # self.scaler.scale(losses_ac['loss_critic']).backward()
-        # self.scaler.scale(losses_ac['loss_actor']).backward()
+        self.scaler.scale(losses_ac['loss_critic']).backward()
+        self.scaler.scale(losses_ac['loss_actor']).backward()
 
-        # self.scaler.unscale_(self.actor_optimizer)
-        # self.scaler.unscale_(self.critic_optimizer)
-        # nn.utils.clip_grad_norm_(self.actor.parameters(), 100)
-        # nn.utils.clip_grad_norm_(self.critic.parameters(), 100)
+        self.scaler.unscale_(self.actor_optimizer)
+        self.scaler.unscale_(self.critic_optimizer)
+        nn.utils.clip_grad_norm_(self.actor.parameters(), 100)
+        nn.utils.clip_grad_norm_(self.critic.parameters(), 100)
 
-        # self.scaler.step(self.actor_optimizer)
-        # self.scaler.step(self.critic_optimizer)
+        self.scaler.step(self.actor_optimizer)
+        self.scaler.step(self.critic_optimizer)
 
-        # self.critic.update_target()
+        self.critic.update_target()
         self.scaler.update()
 
         losses = {l: val.detach().cpu().item() for l, val in losses.items()}
-        # losses_ac = {l: val.detach().cpu().item() for l, val in losses_ac.items()}
+        losses_ac = {l: val.detach().cpu().item() for l, val in losses_ac.items()}
 
-        # return losses | losses_ac
-        return losses
+        return losses | losses_ac
 
     def save_ckpt(self, epoch_num: int, losses: dict[str, float]):
         torch.save(
