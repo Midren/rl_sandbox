@@ -297,7 +297,7 @@ class WorldModel(nn.Module):
         next_repr = Dist(next_repr_logits).rsample().reshape(
             -1, self.latent_dim * self.latent_classes)
         reward = self.reward_predictor(
-            torch.concat([determ_state.squeeze(0), next_repr], dim=1)).rsample()
+            torch.concat([determ_state.squeeze(0), next_repr], dim=1)).mode
         discount_factors = self.discount_predictor(torch.concat([determ_state.squeeze(0), next_repr], dim=1)).sample()
         return determ_state, next_repr, reward, discount_factors
 
@@ -418,7 +418,7 @@ class ImaginativeCritic(nn.Module):
         return torch.stack(list(reversed(v_lambdas)))
 
     def lambda_return(self, zs, rs, ds):
-        vs = self.target_critic(zs).rsample().detach()
+        vs = self.target_critic(zs).mode.detach()
         return self._lambda_return(vs, rs, ds)
 
 
@@ -448,6 +448,7 @@ class DreamerV2(RlAgent):
             critic_lr: float,
             device_type: str = 'cpu'):
 
+        self.device = device_type
         self.imagination_horizon = imagination_horizon
         self.cluster_size = batch_cluster_size
         self.actions_num = actions_num
@@ -515,15 +516,14 @@ class DreamerV2(RlAgent):
 
             z = next_z.detach()
         return (torch.stack(zs), actions, torch.stack(next_zs),
-                torch.stack(rewards).detach(), torch.stack(ts).detach(), torch.stack(determs))
+                torch.stack(rewards), torch.stack(ts), torch.stack(determs))
 
     def reset(self):
         self._state = None
         # FIXME: instead of zero, it should be mode of distribution
-        self._last_action = torch.zeros((1, 1, self.actions_num),
-                                        device=next(self.world_model.parameters()).device)
-        self._latent_probs = torch.zeros((32, 32), device=next(self.world_model.parameters()).device)
-        self._action_probs = torch.zeros((self.actions_num), device=next(self.world_model.parameters()).device)
+        self._last_action = torch.zeros((1, 1, self.actions_num), device=self.device)
+        self._latent_probs = torch.zeros((32, 32), device=self.device)
+        self._action_probs = torch.zeros((self.actions_num), device=self.device)
         self._stored_steps = 0
 
     @staticmethod
@@ -537,7 +537,7 @@ class DreamerV2(RlAgent):
 
     def get_action(self, obs: Observation) -> Action:
         # NOTE: pytorch fails without .copy() only when get_action is called
-        obs = torch.from_numpy(obs.copy()).to(next(self.world_model.parameters()).device)
+        obs = torch.from_numpy(obs.copy()).to(self.device)
         obs = self.preprocess_obs(obs).unsqueeze(0)
 
         determ, latent_repr_logits = self.world_model.get_latent(obs, self._last_action,
@@ -560,7 +560,7 @@ class DreamerV2(RlAgent):
             return self._last_action.squeeze().detach().cpu().numpy()
 
     def _generate_video(self, obs: Observation, actions: list[Action]):
-        obs = torch.from_numpy(obs.copy()).to(next(self.world_model.parameters()).device)
+        obs = torch.from_numpy(obs.copy()).to(self.device)
         obs = self.preprocess_obs(obs).unsqueeze(0)
 
         if False:
@@ -576,7 +576,7 @@ class DreamerV2(RlAgent):
         return video_r
 
     def _generate_video_with_update(self, obs: list[Observation], init_action: list[Action]):
-        obs = torch.from_numpy(obs.copy()).to(next(self.world_model.parameters()).device)
+        obs = torch.from_numpy(obs.copy()).to(self.device)
         obs = self.preprocess_obs(obs)
 
         if False:
@@ -633,7 +633,7 @@ class DreamerV2(RlAgent):
 
     def from_np(self, arr: np.ndarray):
         arr = torch.from_numpy(arr) if isinstance(arr, np.ndarray) else arr
-        return arr.to(next(self.world_model.parameters()).device, non_blocking=True)
+        return arr.to(self.device, non_blocking=True)
 
     def train(self, obs: Observations, a: Actions, r: Rewards, next_obs: Observations,
               is_finished: TerminationFlags):
@@ -652,7 +652,7 @@ class DreamerV2(RlAgent):
                 next_obs, a, r, discount_factors)
 
             # NOTE: 'aten::nonzero' inside KL divergence is not currently supported on M1 Pro MPS device
-            # world_model_loss = torch.Tensor(1).to(next(self.world_model.parameters()).device)
+            # world_model_loss = torch.Tensor(1).to(self.device)
             world_model_loss = (losses['loss_reconstruction'] +
                                 losses['loss_reward_pred'] +
                                 losses['loss_kl_reg'] +
@@ -668,6 +668,9 @@ class DreamerV2(RlAgent):
         nn.utils.clip_grad_norm_(self.world_model.parameters(), 100)
         self.scaler.step(self.world_model_optimizer)
 
+        metrics = defaultdict(
+            lambda: torch.zeros(1).to(self.device))
+
         with torch.cuda.amp.autocast(enabled=True):
             # idx = torch.randperm(discovered_latents.size(0))
             # initial_states = discovered_latents[idx]
@@ -675,7 +678,7 @@ class DreamerV2(RlAgent):
             initial_states = discovered_latents
 
             losses_ac = defaultdict(
-                lambda: torch.zeros(1).to(next(self.critic.parameters()).device))
+                lambda: torch.zeros(1).to(self.device))
 
             zs, action_dists, next_zs, rewards, discount_factors, _ = self.imagine_trajectory(
                 initial_states)
@@ -692,8 +695,13 @@ class DreamerV2(RlAgent):
 
             vs = self.critic.lambda_return(next_zs, rewards, discount_factors).detach()
 
-            losses_ac['loss_critic'] = -(self.critic.estimate_value(next_zs.detach()).log_prob(
-                vs).unsqueeze(-1) * discount_factors).mean()
+            predicted_vs_dist = self.critic.estimate_value(next_zs.detach())
+            losses_ac['loss_critic'] = -(predicted_vs_dist.log_prob(vs).unsqueeze(-1) * discount_factors).mean()
+
+            metrics['critic/avg_value'] = self.critic.target_critic(next_zs).mode.mean()
+            for i in range(self.imagination_horizon):
+                metrics[f'critic/avg_lambda_value_{i}'] = vs[i].mean()
+            metrics['critic/avg_predicted_value'] = predicted_vs_dist.mode.mean()
 
             # last action should be ignored as it is not used to predict next state, thus no feedback
             # first value should be ignored as it is comes from replay buffer
@@ -706,6 +714,13 @@ class DreamerV2(RlAgent):
 
             losses_ac['loss_actor'] += losses_ac['loss_actor_reinforce'] + losses_ac[
                 'loss_actor_dynamics_backprop'] + losses_ac['loss_actor_entropy']
+
+            # mean and std are estimated statistically as tanh transformation is used
+            act_avg = torch.stack([a.expand((128, *a.batch_shape)).sample().mean(dim=0) for a in action_dists[:-1]])
+            metrics['actor/avg_val'] = act_avg.mean()
+            metrics['actor/avg_sd'] = ((torch.stack([a.expand((128, *a.batch_shape)).sample() for a in action_dists[:-1]], dim=1) - act_avg)**2).mean().sqrt()
+            metrics['actor/min_val'] = torch.stack([a.expand((128, *a.batch_shape)).sample() for a in action_dists[:-1]]).min()
+            metrics['actor/max_val'] = torch.stack([a.expand((128, *a.batch_shape)).sample() for a in action_dists[:-1]]).max()
 
         self.actor_optimizer.zero_grad(set_to_none=True)
         self.critic_optimizer.zero_grad(set_to_none=True)
@@ -726,8 +741,9 @@ class DreamerV2(RlAgent):
 
         losses = {l: val.detach().cpu().item() for l, val in losses.items()}
         losses_ac = {l: val.detach().cpu().item() for l, val in losses_ac.items()}
+        metrics = {l: val.detach().cpu().item() for l, val in metrics.items()}
 
-        return losses | losses_ac
+        return losses | losses_ac | metrics
 
     def save_ckpt(self, epoch_num: int, losses: dict[str, float]):
         torch.save(
