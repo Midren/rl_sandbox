@@ -15,7 +15,8 @@ from rl_sandbox.utils.replay_buffer import (Action, Actions, Observation,
                                             Observations, Rewards,
                                             TerminationFlags)
 
-from rl_sandbox.TruncatedNormal import TruncatedNormal
+from torchviz import make_dot
+from torchrl.modules import TanhNormal, TruncatedNormal
 
 
 class View(nn.Module):
@@ -78,16 +79,12 @@ class DistLayer(nn.Module):
             case 'normal_tanh':
                 def get_tanh_normal(x, min_std=0.1):
                     mean, std = x.chunk(2, dim=-1)
-                    mean = 5 * torch.tanh(mean / 5)
-                    std = F.softplus(std) + min_std
-                    dist = td.Normal(mean, std)
-                    return td.TransformedDistribution(dist, [td.TanhTransform(cache_size=1)])
+                    return TanhNormal(mean, F.softplus(std) + min_std, upscale=5)
                 self.dist = get_tanh_normal
             case 'normal_trunc':
                 def get_trunc_normal(x, min_std=0.1):
                     mean, std = x.chunk(2, dim=-1)
-                    std = 2 * torch.sigmoid(std / 2) + min_std
-                    return TruncatedNormal(torch.tanh(mean), std, a=-1 + 1e-6, b=1 - 1e-6)
+                    return TruncatedNormal(mean, 2*torch.sigmoid(std) + min_std, upscale=2)
                 self.dist = get_trunc_normal
             case 'binary':
                 self.dist = lambda x: td.Bernoulli(logits=x)
@@ -720,7 +717,7 @@ class DreamerV2(RlAgent):
             losses_ac = defaultdict(
                 lambda: torch.zeros(1).to(self.device))
 
-            zs, action_dists, next_zs, rewards, discount_factors, _, actions = self.imagine_trajectory(
+            zs, _, next_zs, rewards, discount_factors, _, actions = self.imagine_trajectory(
                 initial_states)
             rewards = self.world_model.reward_normalizer(rewards)
 
@@ -728,16 +725,16 @@ class DreamerV2(RlAgent):
             discount_factors = self.critic.gamma * torch.ones_like(rewards)
 
             # Ignore all factors after first is_finished state
-            discount_factors = torch.cumprod(discount_factors, dim=0).detach()
+            discount_factors = torch.cumprod(discount_factors, dim=0)
 
             # Discounted factors should be shifted as they predict whether next state is terminal
             # First discount factor on contrary is always 1 as it cannot lead to trajectory finish
-            discount_factors = torch.cat([torch.ones_like(discount_factors[:1, :]), discount_factors[:-1, :]], dim=0)
+            discount_factors = torch.cat([torch.ones_like(discount_factors[:1, :]), discount_factors[:-1, :]], dim=0).detach()
 
             # vs = self.critic.lambda_return(zs[1:], rewards[:-1], discount_factors[:-1])
             vs = rewards[:-1] + self.critic.gamma * self.critic.target_critic(zs[1:]).mode
             # vs = torch.cat([vs, rewards[-1].unsqueeze(0)], dim=0)
-            predicted_vs_dist = self.critic.estimate_value(zs[:-1].detach())
+            predicted_vs_dist = self.critic.estimate_value(zs[:-1])
             losses_ac['loss_critic'] = -(predicted_vs_dist.log_prob(vs.detach()).unsqueeze(-1) * discount_factors[:-1]).mean()
 
             # predicted_vs_dist = self.critic.estimate_value(zs[:-2].detach())
@@ -749,32 +746,33 @@ class DreamerV2(RlAgent):
 
             # last action should be ignored as it is not used to predict next state, thus no feedback
             # first value should be ignored as it is comes from replay buffer
-            baseline = self.critic.target_critic(next_zs[1:-2]).mode
-            advantage = (vs[1:-1] - baseline).detach()
-            losses_ac['loss_actor_reinforce'] += -(self.rho * (torch.stack([a.log_prob(actions[idx].detach()) for idx, a in enumerate(action_dists[1:-2])]) * discount_factors[1:-2].squeeze()) * advantage.squeeze()).mean()
-            losses_ac['loss_actor_dynamics_backprop'] = -((1 - self.rho) * (vs[:-1]*discount_factors[:-2])).mean()
+            action_dists = self.actor(zs[:-2].detach())
+            # baseline = self.critic.target_critic(next_zs[1:-2]).mode
+            # advantage = (vs[1:-1] - baseline).detach()
+            losses_ac['loss_actor_reinforce'] += 0 #-(self.rho * (torch.stack([a.log_prob(actions[idx].detach()) for idx, a in enumerate(action_dists[1:])]) * discount_factors[1:-2].squeeze()) * advantage.squeeze()).mean()
+            losses_ac['loss_actor_dynamics_backprop'] = -((1 - self.rho) * (vs[1:]*discount_factors[:-2])).mean()
 
             def calculate_entropy(dist):
                 # x_t = dist.base_dist.base_dist.rsample()
                 # return -(dist.base_dist.base_dist.log_prob(x_t) - torch.log(1 - torch.tanh(x_t).pow(2) + 1e-6)).sum(1)
                 return -dist.log_prob(dist.rsample((128,))).mean(0)
 
-            losses_ac['loss_actor_entropy'] += -(self.eta *
-                    torch.stack([calculate_entropy(a) for a in action_dists[1:-2]]) * discount_factors[1:-2].squeeze()).mean()
+            losses_ac['loss_actor_entropy'] += -(self.eta * calculate_entropy(action_dists)).mean()
+                    # torch.stack([calculate_entropy(a) for a in action_dists[1:]]) * discount_factors[1:-2].squeeze()).mean()
             # losses_ac['loss_actor_entropy'] += (self.eta *
             #         torch.stack([a.entropy() for a in action_dists[1:-1]]) * discount_factors[1:-1].squeeze()).mean()
 
             losses_ac['loss_actor'] = losses_ac['loss_actor_reinforce'] + losses_ac['loss_actor_dynamics_backprop'] + losses_ac['loss_actor_entropy']
 
             # mean and std are estimated statistically as tanh transformation is used
-            act_avg = torch.stack([a.sample((128,)).mean(dim=0) for a in action_dists[:-1]])
+            act_avg = torch.stack([a.sample((128,)).mean(dim=0) for a in action_dists[1:]])
             # act_avg = torch.stack([a.mean for a in action_dists[:-1]])
             metrics['actor/avg_val'] = act_avg.mean()
-            metrics['actor/mode_val'] = torch.stack([torch.mode(a.sample((128,)), 0)[0] for a in action_dists[:-1]]).mean()
+            metrics['actor/mode_val'] = torch.stack([a.mode for a in action_dists[1:]]).mean()
             # metrics['actor/avg_sd'] = torch.stack([a.stddev for a in action_dists[:-1]]).mean()
-            metrics['actor/avg_sd'] = (((torch.stack([a.sample((128,)) for a in action_dists[:-1]], dim=1) - act_avg)**2).mean(0).sqrt()).mean()
-            metrics['actor/min_val'] = torch.stack([a.sample((128,)) for a in action_dists[:-1]]).min()
-            metrics['actor/max_val'] = torch.stack([a.sample((128,)) for a in action_dists[:-1]]).max()
+            metrics['actor/avg_sd'] = (((torch.stack([a.sample((128,)) for a in action_dists[1:]], dim=1) - act_avg)**2).mean(0).sqrt()).mean()
+            metrics['actor/min_val'] = torch.stack([a.sample((128,)) for a in action_dists[1:]]).min()
+            metrics['actor/max_val'] = torch.stack([a.sample((128,)) for a in action_dists[1:]]).max()
 
         self.actor_optimizer.zero_grad(set_to_none=True)
         self.critic_optimizer.zero_grad(set_to_none=True)
