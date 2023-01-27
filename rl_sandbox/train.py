@@ -68,9 +68,9 @@ def main(cfg: DictConfig):
                  with_stack=True) if cfg.debug.profiler else None
 
     for i in tqdm(range(int(cfg.training.pretrain)), desc='Pretraining'):
-        s, a, r, n, f = buff.sample(cfg.training.batch_size,
+        s, a, r, n, f, first = buff.sample(cfg.training.batch_size,
                                     cluster_size=cfg.agent.get('batch_cluster_size', 1))
-        losses = agent.train(s, a, r, n, f)
+        losses = agent.train(s, a, r, n, f, first)
         for loss_name, loss in losses.items():
             writer.add_scalar(f'pre_train/{loss_name}', loss, i)
 
@@ -106,10 +106,10 @@ def main(cfg: DictConfig):
             if global_step % cfg.training.gradient_steps_per_step == 0:
                 # NOTE: unintuitive that batch_size is now number of total
                 #       samples, but not amount of sequences for recurrent model
-                s, a, r, n, f = buff.sample(cfg.training.batch_size,
+                s, a, r, n, f, first = buff.sample(cfg.training.batch_size,
                                             cluster_size=cfg.agent.get('batch_cluster_size', 1))
 
-                losses = agent.train(s, a, r, n, f)
+                losses = agent.train(s, a, r, n, f, first)
                 if cfg.debug.profiler:
                     prof.step()
                 # NOTE: Do not forget to run test with every step to check for outliers
