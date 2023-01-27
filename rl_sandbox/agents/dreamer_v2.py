@@ -12,7 +12,7 @@ from rl_sandbox.agents.rl_agent import RlAgent
 from rl_sandbox.utils.fc_nn import fc_nn_generator
 from rl_sandbox.utils.replay_buffer import (Action, Actions, Observation,
                                             Observations, Rewards,
-                                            TerminationFlags)
+                                            TerminationFlags, IsFirstFlags)
 from rl_sandbox.utils.dists import TruncatedNormal
 
 class View(nn.Module):
@@ -278,15 +278,10 @@ class Normalizer(nn.Module):
 
     def forward(self, x):
         self.update(x)
-        val = self.trans(x)
-        return val
+        return (x / (self.mag + self.eps))*self.scale
 
     def update(self, x):
         self.mag = self.momentum * self.mag.to(x.device)  + (1 - self.momentum) * (x.abs().mean()).detach()
-
-    def trans(self, x):
-        x = x / (self.mag + self.eps)
-        return x*self.scale
 
 
 class WorldModel(nn.Module):
@@ -342,7 +337,7 @@ class WorldModel(nn.Module):
         return determ, latent_repr_logits
 
     def calculate_loss(self, obs: torch.Tensor, a: torch.Tensor, r: torch.Tensor,
-                       discount: torch.Tensor):
+                       discount: torch.Tensor, first: torch.Tensor):
         b, _, h, w = obs.shape  # s <- BxHxWx3
 
         embed = self.encoder(obs)
@@ -351,6 +346,7 @@ class WorldModel(nn.Module):
         a_c = a.reshape(-1, self.cluster_size, self.actions_num)
         r_c = r.reshape(-1, self.cluster_size, 1)
         d_c = discount.reshape(-1, self.cluster_size, 1)
+        first_c = first.reshape(-1, self.cluster_size, 1)
 
         h_prev = None
         losses = defaultdict(lambda: torch.zeros(1).to(next(self.parameters()).device))
@@ -378,7 +374,8 @@ class WorldModel(nn.Module):
 
         for t in range(self.cluster_size):
             # s_t <- 1xB^xHxWx3
-            embed_t, a_t = embed_c[:, t].unsqueeze(0), a_c[:, t].unsqueeze(0)
+            embed_t, a_t, first_t = embed_c[:, t].unsqueeze(0), a_c[:, t].unsqueeze(0), first_c[:, t].unsqueeze(0)
+            a_t = a_t * (1 - first_t)
 
             determ_t, prior_stoch_logits, posterior_stoch_logits = self.recurrent_model.forward(
                 h_prev, embed_t, a_t)
@@ -596,9 +593,6 @@ class DreamerV2(RlAgent):
                                                                   32 * 32).unsqueeze(0))
 
         actor_dist = self.actor(torch.cat(self._state, dim=-1))
-        # FIXME: expl_noise magic number
-        self._last_action = actor_dist.rsample() + torch.randn_like(self._last_action) * 0.3
-        self._last_action = torch.clamp(self._last_action, -1, 1)
 
         if False:
             self._action_probs += actor_dist.base_dist.probs.squeeze()
@@ -697,7 +691,7 @@ class DreamerV2(RlAgent):
         return arr.to(self.device, non_blocking=True)
 
     def train(self, obs: Observations, a: Actions, r: Rewards, next_obs: Observations,
-              is_finished: TerminationFlags):
+              is_finished: TerminationFlags, is_first: IsFirstFlags):
 
         obs = self.preprocess_obs(self.from_np(obs))
         a = self.from_np(a).to(torch.int64)
@@ -706,6 +700,8 @@ class DreamerV2(RlAgent):
         r = self.from_np(r)
         next_obs = self.preprocess_obs(self.from_np(next_obs))
         discount_factors = (1 - self.from_np(is_finished).type(torch.float32))
+        first_flags = self.from_np(is_first).type(torch.float32)
+
         number_of_zero_discounts = (1 - discount_factors).sum()
         if number_of_zero_discounts > 0:
             pass
@@ -713,7 +709,7 @@ class DreamerV2(RlAgent):
         # take some latent embeddings as initial
         with torch.cuda.amp.autocast(enabled=True):
             losses, discovered_latents, wm_metrics = self.world_model.calculate_loss(
-                next_obs, a, r, discount_factors)
+                    obs, a, r, discount_factors, first_flags)
 
             # NOTE: 'aten::nonzero' inside KL divergence is not currently supported on M1 Pro MPS device
             # world_model_loss = torch.Tensor(1).to(self.device)
@@ -763,19 +759,12 @@ class DreamerV2(RlAgent):
             # Ignore all factors after first is_finished state
             discount_factors = torch.cumprod(discount_factors, dim=0)
 
-            # vs = rewards[:-1] + self.critic.gamma * self.critic.target_critic(zs[1:]) * discount_factors[1:]
             predicted_vs_dist = self.critic.estimate_value(zs[:-1].detach())
-            # losses_ac['loss_critic'] = F.mse_loss(predicted_vs_dist, vs[:-1].detach())
             losses_ac['loss_critic'] = -(predicted_vs_dist.log_prob(vs.detach())).mean()
 
-            # predicted_vs_dist = self.critic.estimate_value(zs[:-2].detach())
-            # losses_ac['loss_critic'] = -(predicted_vs_dist.log_prob(vs[:-1].detach()).unsqueeze(-1) * discount_factors[:-2]).mean()
-
             metrics['critic/avg_target_value'] = self.critic.target_critic(zs[1:]).mode.mean()
-            # metrics['critic/avg_target_value'] = self.critic.target_critic(zs[1:]).mean()
             metrics['critic/avg_lambda_value'] = vs.mean()
             metrics['critic/avg_predicted_value'] = predicted_vs_dist.mode.mean()
-            # metrics['critic/avg_predicted_value'] = predicted_vs_dist.mean()
 
             # last action should be ignored as it is not used to predict next state, thus no feedback
             # first value should be ignored as it is comes from replay buffer
@@ -786,26 +775,18 @@ class DreamerV2(RlAgent):
             losses_ac['loss_actor_dynamics_backprop'] = -((1 - self.rho) * (vs[1:]*discount_factors[:-1])).mean()
 
             def calculate_entropy(dist):
-                # return -dist.base_dist.log_prob(dist.rsample((1024,))).mean(0).unsqueeze(2)
                 return dist.entropy().unsqueeze(2)
                 # return dist.base_dist.base_dist.entropy().unsqueeze(2)
 
             losses_ac['loss_actor_entropy'] += -(self.eta * calculate_entropy(action_dists)*discount_factors[:-1]).mean()
-
-                    # torch.stack([calculate_entropy(a) for a in action_dists[1:]]) * discount_factors[1:-2].squeeze()).mean()
-            # losses_ac['loss_actor_entropy'] += (self.eta *
-            #         torch.stack([a.entropy() for a in action_dists[1:-1]]) * discount_factors[1:-1].squeeze()).mean()
-
             losses_ac['loss_actor'] = losses_ac['loss_actor_reinforce'] + losses_ac['loss_actor_dynamics_backprop'] + losses_ac['loss_actor_entropy']
 
             # mean and std are estimated statistically as tanh transformation is used
             sample = action_dists.rsample((128,))
             act_avg = sample.mean(0)
-            # act_avg = torch.stack([a.mean for a in action_dists[:-1]])
             metrics['actor/avg_val'] = act_avg.mean()
             # metrics['actor/mode_val'] = action_dists.mode.mean()
             metrics['actor/mean_val'] = action_dists.mean.mean()
-            # metrics['actor/avg_sd'] = torch.stack([a.stddev for a in action_dists[:-1]]).mean()
             metrics['actor/avg_sd'] = (((sample - act_avg)**2).mean(0).sqrt()).mean()
             metrics['actor/min_val'] = sample.min()
             metrics['actor/max_val'] = sample.max()

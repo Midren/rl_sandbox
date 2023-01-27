@@ -14,6 +14,7 @@ States = NDArray[Shape["*,*"], Float] | Observations
 Actions = NDArray[Shape["*,*"], Int]
 Rewards = NDArray[Shape["*"], Float]
 TerminationFlags = NDArray[Shape["*"], Bool]
+IsFirstFlags = TerminationFlags
 
 
 @dataclass
@@ -31,7 +32,7 @@ class Rollout:
 # TODO: make buffer concurrent-friendly
 class ReplayBuffer:
 
-    def __init__(self, max_len=2e5):
+    def __init__(self, max_len=2e6):
         self.rollouts: deque[Rollout] = deque()
         self.rollouts_len: deque[int] = deque()
         self.curr_rollout = None
@@ -81,10 +82,10 @@ class ReplayBuffer:
         self,
         batch_size: int,
         cluster_size: int = 1
-    ) -> tuple[States, Actions, Rewards, States, TerminationFlags]:
+    ) -> tuple[States, Actions, Rewards, States, TerminationFlags, IsFirstFlags]:
         seq_num = batch_size // cluster_size
         # NOTE: constant creation of numpy arrays from self.rollout_len seems terrible for me
-        s, a, r, n, t = [], [], [], [], []
+        s, a, r, n, t, is_first = [], [], [], [], [], []
         do_add_curr = self.curr_rollout is not None and len(self.curr_rollout.states) > cluster_size
         tot = self.total_num + (len(self.curr_rollout.states) if do_add_curr else 0)
         r_indeces = np.random.choice(len(self.rollouts) + int(do_add_curr),
@@ -110,6 +111,9 @@ class ReplayBuffer:
             else:
                 actions = rollout.actions[s_idx:s_idx + cluster_size]
 
+            is_first.append(np.zeros(cluster_size))
+            if s_idx == 0:
+                is_first[-1][0] = 1
             s.append(rollout.states[s_idx:s_idx + cluster_size])
             a.append(actions)
             r.append(rollout.rewards[s_idx:s_idx + cluster_size])
@@ -121,4 +125,4 @@ class ReplayBuffer:
                     n.append(rollout.states[s_idx+1:s_idx+1 + cluster_size - 1])
                 n.append(rollout.next_states)
         return (np.concatenate(s), np.concatenate(a), np.concatenate(r, dtype=np.float32),
-            np.concatenate(n), np.concatenate(t))
+            np.concatenate(n), np.concatenate(t), np.concatenate(is_first))
