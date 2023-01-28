@@ -1,5 +1,6 @@
 import typing as t
 from collections import defaultdict
+from dataclasses import dataclass
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -7,6 +8,7 @@ import torch
 import torch.distributions as td
 from torch import nn
 from torch.nn import functional as F
+from jaxtyping import Float, Bool
 
 from rl_sandbox.agents.rl_agent import RlAgent
 from rl_sandbox.utils.fc_nn import fc_nn_generator
@@ -95,6 +97,35 @@ class DistLayer(nn.Module):
 def Dist(val):
     return DistLayer('onehot')(val)
 
+@dataclass
+class State:
+    determ: Float[torch.Tensor, 'seq batch determ']
+    stoch_logits: Float[torch.Tensor, 'seq batch latent_classes latent_dim']
+    stoch_: t.Optional[Bool[torch.Tensor, 'seq batch stoch_dim']] = None
+
+    @property
+    def combined(self):
+        return torch.concat([self.determ, self.stoch], dim=-1)
+
+    @property
+    def stoch(self):
+        if self.stoch_ is None:
+            self.stoch_ = Dist(self.stoch_logits).rsample().reshape(self.stoch_logits.shape[:2] + (-1,))
+        return self.stoch_
+
+    @property
+    def stoch_dist(self):
+        return Dist(self.stoch_logits)
+
+    @classmethod
+    def stack(cls, states: list['State'], dim = 0):
+        if states[0].stoch_ is not None:
+            stochs = torch.cat([state.stoch for state in states], dim=dim)
+        else:
+            stochs = None
+        return State(torch.cat([state.determ for state in states], dim=dim),
+                     torch.cat([state.stoch_logits for state in states], dim=dim),
+                     stochs)
 
 class RSSM(nn.Module):
     """
@@ -145,7 +176,7 @@ class RSSM(nn.Module):
                 nn.ELU(inplace=True),
                 nn.Linear(hidden_size,
                           latent_dim * self.latent_classes),  # Dreamer 'img_dist_{k}'
-                View((-1, latent_dim, self.latent_classes))) for _ in range(self.ensemble_num)
+                View((1, -1, latent_dim, self.latent_classes))) for _ in range(self.ensemble_num)
         ])
 
         # For observation we do not have ensemble
@@ -157,9 +188,9 @@ class RSSM(nn.Module):
             nn.ELU(inplace=True),
             nn.Linear(hidden_size,
                       latent_dim * self.latent_classes),  # Dreamer 'obs_dist'
-            View((-1, latent_dim, self.latent_classes)))
+            View((1, -1, latent_dim, self.latent_classes)))
 
-    def estimate_stochastic_latent(self, prev_determ):
+    def estimate_stochastic_latent(self, prev_determ: torch.Tensor):
         dists_per_model = [model(prev_determ) for model in self.ensemble_prior_estimator]
         # NOTE: Maybe something smarter can be used instead of
         #       taking only one random between all ensembles
@@ -168,54 +199,33 @@ class RSSM(nn.Module):
         return dists_per_model[idx]
 
     def predict_next(self,
-                     stoch_latent,
-                     action,
-                     deter_state: t.Optional[torch.Tensor] = None):
-        # FIXME: Move outside of rssm to omit checking
-        if deter_state is None:
-            deter_state = torch.zeros(*stoch_latent.shape[:2], self.hidden_size).to(
-                next(self.stoch_net.parameters()).device)
-        x = self.pre_determ_recurrent(torch.concat([stoch_latent, action], dim=-1))
+                     prev_state: State,
+                     action) -> State:
+        x = self.pre_determ_recurrent(torch.concat([prev_state.stoch, action], dim=-1))
         # NOTE: x and determ are actually the same value if sequence of 1 is inserted
-        x, determ = self.determ_recurrent(x, deter_state)
+        x, determ = self.determ_recurrent(x, prev_state.determ)
 
         # used for KL divergence
         predicted_stoch_logits = self.estimate_stochastic_latent(x)
-        return determ, predicted_stoch_logits
+        return State(determ, predicted_stoch_logits)
 
-    def update_current(self, determ, embed):  # Dreamer 'obs_out'
-        return self.stoch_net(torch.concat([determ, embed], dim=-1))
+    def update_current(self, prior: State, embed) -> State: # Dreamer 'obs_out'
+        return State(prior.determ, self.stoch_net(torch.concat([prior.determ, embed], dim=-1)))
 
-    def forward(self, h_prev: t.Optional[tuple[torch.Tensor, torch.Tensor]], embed,
-                action):
+    def forward(self, h_prev: State, embed,
+                action) -> tuple[State, State]:
         """
             'h' <- internal state of the world
             'z' <- latent embedding of current observation
             'a' <- action taken on prev step
             Returns 'h_next' <- the next next of the world
         """
+        prior = self.predict_next(h_prev, action)
+        posterior = self.update_current(prior, embed)
 
-        # FIXME: Use zero vector for prev_state of first
-        # Move outside of rssm to omit checking
-        if h_prev is None:
-            h_prev = (torch.zeros((
-                *embed.shape[:-1],
-                self.hidden_size,
-            ),
-                                  device=next(self.stoch_net.parameters()).device),
-                      torch.zeros(
-                          (*action.shape[:-1], self.latent_dim * self.latent_classes),
-                          device=next(self.stoch_net.parameters()).device))
-        deter_prev, stoch_prev = h_prev
-        determ, prior_stoch_logits = self.predict_next(stoch_prev,
-                                                     action,
-                                                     deter_state=deter_prev)
-        posterior_stoch_logits = self.update_current(determ, embed)
-
-        return [determ, prior_stoch_logits, posterior_stoch_logits]
+        return prior, posterior
 
 
-# NOTE: residual blocks are not used inside dreamer
 class Encoder(nn.Module):
 
     def __init__(self, kernel_sizes=[4, 4, 4, 4]):
@@ -319,22 +329,26 @@ class WorldModel(nn.Module):
                                                   final_activation=DistLayer('binary'))
         self.reward_normalizer = Normalizer(momentum=1.00, scale=1.0, eps=1e-8)
 
-    def predict_next(self, latent_repr, action, world_state: t.Optional[torch.Tensor]):
-        determ_state, next_repr_logits = self.recurrent_model.predict_next(
-            latent_repr.unsqueeze(0), action.unsqueeze(0), world_state)
+    def get_initial_state(self, batch_size: int = 1, seq_size: int = 1):
+        device = next(self.parameters()).device
+        return State(torch.zeros(seq_size, batch_size, self.rssm_dim, device=device),
+                            torch.zeros(seq_size, batch_size, self.latent_classes, self.latent_dim, device=device),
+                            torch.zeros(seq_size, batch_size, self.latent_classes * self.latent_dim, device=device))
 
-        next_repr = Dist(next_repr_logits).rsample().reshape(
-            -1, self.latent_dim * self.latent_classes)
-        inp = torch.concat([determ_state.squeeze(0), next_repr], dim=-1)
-        reward = self.reward_predictor(inp).mode
-        discount_factors = self.discount_predictor(inp).sample()
-        return determ_state, next_repr, reward, discount_factors
+    def predict_next(self, prev_state: State, action):
+        prior = self.recurrent_model.predict_next(prev_state, action)
 
-    def get_latent(self, obs: torch.Tensor, action, state):
-        embed = self.encoder(obs)
-        determ, _, latent_repr_logits = self.recurrent_model.forward(state, embed.unsqueeze(0),
+        reward = self.reward_predictor(prior.combined).mode
+        discount_factors = self.discount_predictor(prior.combined).sample()
+        return prior, reward, discount_factors
+
+    def get_latent(self, obs: torch.Tensor, action, state: t.Optional[State]) -> State:
+        if state is None:
+            state = self.get_initial_state()
+        embed = self.encoder(obs.unsqueeze(0))
+        _, posterior = self.recurrent_model.forward(state, embed.unsqueeze(0),
                                                            action)
-        return determ, latent_repr_logits
+        return posterior
 
     def calculate_loss(self, obs: torch.Tensor, a: torch.Tensor, r: torch.Tensor,
                        discount: torch.Tensor, first: torch.Tensor):
@@ -348,7 +362,6 @@ class WorldModel(nn.Module):
         d_c = discount.reshape(-1, self.cluster_size, 1)
         first_c = first.reshape(-1, self.cluster_size, 1)
 
-        h_prev = None
         losses = defaultdict(lambda: torch.zeros(1).to(next(self.parameters()).device))
         metrics = defaultdict(lambda: torch.zeros(1).to(next(self.parameters()).device))
 
@@ -364,38 +377,30 @@ class WorldModel(nn.Module):
                 kl_rhs = KL_(Dist(dist2), Dist(dist1.detach())).mean()
             return (self.kl_beta * (self.alpha * kl_lhs + (1 - self.alpha) * kl_rhs))
 
-        latent_vars = []
-        determ_vars = []
-        prior_logits = []
-        posterior_logits = []
+        priors = []
+        posteriors = []
 
-        # inps = []
-        # reconstructed = []
-
+        prev_state = self.get_initial_state(b // self.cluster_size)
         for t in range(self.cluster_size):
             # s_t <- 1xB^xHxWx3
             embed_t, a_t, first_t = embed_c[:, t].unsqueeze(0), a_c[:, t].unsqueeze(0), first_c[:, t].unsqueeze(0)
             a_t = a_t * (1 - first_t)
 
-            determ_t, prior_stoch_logits, posterior_stoch_logits = self.recurrent_model.forward(
-                h_prev, embed_t, a_t)
-            posterior_stoch = Dist(posterior_stoch_logits).rsample().reshape(
-                -1, self.latent_dim * self.latent_classes)
+            prior, posterior = self.recurrent_model.forward(prev_state, embed_t, a_t)
+            prev_state = posterior
 
-            h_prev = [determ_t, posterior_stoch.unsqueeze(0)]
-            determ_vars.append(determ_t.squeeze(0))
-            latent_vars.append(posterior_stoch)
+            priors.append(prior)
+            posteriors.append(posterior)
 
-            prior_logits.append(prior_stoch_logits)
-            posterior_logits.append(posterior_stoch_logits)
+        posterior = State.stack(posteriors)
+        prior = State.stack(priors)
 
-        # inp = torch.concat([determ_vars.squeeze(0), posterior_stoch], dim=1)
-        inp = torch.concat([torch.stack(determ_vars, dim=1), torch.stack(latent_vars, dim=1)], dim=-1)
-        r_pred = self.reward_predictor(inp)
-        f_pred = self.discount_predictor(inp)
-        x_r = self.image_predictor(torch.flatten(inp, 0, 1))
-        prior_logits = torch.flatten(torch.stack(prior_logits, dim=1), 0, 1)
-        posterior_logits = torch.flatten(torch.stack(posterior_logits, dim=1), 0, 1)
+        r_pred = self.reward_predictor(posterior.combined.transpose(0, 1))
+        f_pred = self.discount_predictor(posterior.combined.transpose(0, 1))
+        x_r = self.image_predictor(posterior.combined.transpose(0, 1).flatten(0, 1))
+
+        prior_logits = prior.stoch_logits
+        posterior_logits = posterior.stoch_logits
 
         losses['loss_reconstruction'] = -x_r.log_prob(obs).mean()
         losses['loss_reward_pred'] = -r_pred.log_prob(r_c).mean()
@@ -406,7 +411,7 @@ class WorldModel(nn.Module):
         metrics['prior_entropy'] = Dist(prior_logits).entropy().mean()
         metrics['posterior_entropy'] = Dist(posterior_logits).entropy().mean()
 
-        return losses, inp.flatten(0, 1).detach(), metrics
+        return losses, posterior, metrics
 
 
 class ImaginativeCritic(nn.Module):
@@ -451,7 +456,7 @@ class ImaginativeCritic(nn.Module):
         # Formula is actually slightly different than in paper
         # https://github.com/danijar/dreamerv2/issues/25
         v_lambdas = [vs[-1]]
-        for i in range(rs.shape[0] - 2, -1, -1):
+        for i in range(rs.shape[0] - 1, -1, -1):
             v_lambda = rs[i] + ds[i] * (
                 (1 - self.lambda_) * vs[i+1] +
                 self.lambda_ * v_lambdas[-1])
@@ -531,42 +536,31 @@ class DreamerV2(RlAgent):
         self.reset()
 
     def imagine_trajectory(
-            self, z_0, precomp_actions: t.Optional[list[Action]] = None, horizon: t.Optional[int] = None
-    ) -> tuple[torch.Tensor, torch.distributions.Distribution, torch.Tensor, torch.Tensor,
-               torch.Tensor, torch.Tensor, torch.Tensor]:
+            self, init_state: State, precomp_actions: t.Optional[list[Action]] = None, horizon: t.Optional[int] = None
+    ) -> tuple[State, torch.Tensor, torch.Tensor,
+               torch.Tensor]:
         if horizon is None:
             horizon = self.imagination_horizon
-        world_state = torch.zeros(1, z_0.shape[0], 200, device=z_0.device)
-        zs, actions_dists, actions, next_zs, rewards, ts, determs = [], [], [], [], [], [], []
-        z = z_0
+        states, actions, rewards, ts = [], [], [], []
+        prev_state = init_state
         for i in range(horizon):
-            # FIXME: if somebody sees it, you have no credibility as programmer
-            if z.shape[1] == 1224:
-                z, world_state = z[:, :1024], z[:, 1024:].unsqueeze(0)
             if precomp_actions is not None:
-                a_dist = None
                 a = precomp_actions[i].unsqueeze(0)
             else:
-                a_dist = self.actor(torch.cat([world_state.squeeze(), z], dim=-1).detach())
+                a_dist = self.actor(prev_state.combined.detach())
                 a = a_dist.rsample()
-            world_state, next_z, reward, discount = self.world_model.predict_next(
-                z, a, world_state)
+            prior, reward, discount = self.world_model.predict_next(prev_state, a)
+            prev_state = prior
 
-            zs.append(z)
-            actions_dists.append(a_dist)
-            next_zs.append(next_z)
+            states.append(prior)
             rewards.append(reward)
             ts.append(discount)
-            determs.append(world_state[0])
             actions.append(a)
 
-            z = next_z
-        return (torch.stack(zs), actions_dists, torch.stack(next_zs),
-                torch.stack(rewards), torch.stack(ts), torch.stack(determs), torch.stack(actions))
+        return (State.stack(states), torch.cat(actions), torch.cat(rewards), torch.cat(ts))
 
     def reset(self):
-        self._state = None
-        # FIXME: instead of zero, it should be mode of distribution
+        self._state = self.world_model.get_initial_state()
         self._last_action = torch.zeros((1, 1, self.actions_num), device=self.device)
         self._latent_probs = torch.zeros((32, 32), device=self.device)
         self._action_probs = torch.zeros((self.actions_num), device=self.device)
@@ -584,19 +578,16 @@ class DreamerV2(RlAgent):
     def get_action(self, obs: Observation) -> Action:
         # NOTE: pytorch fails without .copy() only when get_action is called
         obs = torch.from_numpy(obs.copy()).to(self.device)
-        obs = self.preprocess_obs(obs).unsqueeze(0)
+        obs = self.preprocess_obs(obs)
 
-        determ, latent_repr_logits = self.world_model.get_latent(obs, self._last_action,
-                                                               self._state)
-        latent_repr_dist = Dist(latent_repr_logits)
-        self._state = (determ, latent_repr_dist.rsample().reshape(-1,
-                                                                  32 * 32).unsqueeze(0))
+        self._state = self.world_model.get_latent(obs, self._last_action, self._state)
 
-        actor_dist = self.actor(torch.cat(self._state, dim=-1))
+        actor_dist = self.actor(self._state.combined)
+        self._last_action = actor_dist.sample()
 
         if False:
             self._action_probs += actor_dist.base_dist.probs.squeeze()
-        self._latent_probs += latent_repr_dist.base_dist.probs.squeeze()
+        self._latent_probs += self._state.stoch_dist.base_dist.probs.squeeze()
         self._stored_steps += 1
 
         if False:
@@ -608,26 +599,23 @@ class DreamerV2(RlAgent):
         obs = torch.from_numpy(obs.copy()).to(self.device)
         obs = self.preprocess_obs(obs)
         actions = self.from_np(actions)
-        state = None
         video = []
         rews = []
 
-        z_0 = Dist(self.world_model.get_latent(obs[0].unsqueeze(0), actions[0].unsqueeze(0).unsqueeze(0), None)[1]).rsample().reshape(-1, 32 * 32).unsqueeze(0)
+        state = self.world_model.get_latent(obs[0], actions[0].unsqueeze(0).unsqueeze(0), None)
         for idx, (o, a) in enumerate(list(zip(obs, actions))):
             if idx >= update_num:
                 break
-            determ, stoch_logits = self.world_model.get_latent(o.unsqueeze(0), a.unsqueeze(0).unsqueeze(0), state)
-            z_0 = Dist(stoch_logits).rsample().reshape(-1, 32 * 32).unsqueeze(0)
-            state = (determ, z_0)
-            inp = torch.concat([determ, z_0], dim=-1)
-            video_r = self.world_model.image_predictor(inp).mode.cpu().detach().numpy()
-            rews.append(self.world_model.reward_predictor(inp).mode.item())
+            state = self.world_model.get_latent(o, a.unsqueeze(0).unsqueeze(0), state)
+            video_r = self.world_model.image_predictor(state.combined).mode.cpu().detach().numpy()
+            rews.append(self.world_model.reward_predictor(state.combined).mode.item())
             video_r = ((video_r + 0.5) * 255.0).astype(np.uint8)
             video.append(video_r)
 
         if update_num < len(obs):
-            zs, _, _, rews, _, determs, _ = self.imagine_trajectory(z_0.squeeze(0), actions[update_num+1:], horizon=self.imagination_horizon - 1 - update_num)
-            video_r = self.world_model.image_predictor(torch.concat([torch.concat([torch.zeros_like(determs[0]).unsqueeze(0), determs]), torch.concat([z_0, zs])], dim=-1)).mode.cpu().detach().numpy()
+            states, _, rews, _ = self.imagine_trajectory(state, actions[update_num+1:].unsqueeze(1), horizon=self.imagination_horizon - 1 - update_num)
+            states = State.stack([state, states])
+            video_r = self.world_model.image_predictor(states.combined).mode.cpu().detach().numpy()
             video_r = ((video_r + 0.5) * 255.0).astype(np.uint8)
             video.append(video_r)
 
@@ -649,7 +637,7 @@ class DreamerV2(RlAgent):
         ])
         videos_r = np.concatenate(videos_r, axis=3)
 
-        videos_comparison = np.expand_dims(np.concatenate([videos, videos_r, np.abs(videos - videos_r)], axis=2), 0)
+        videos_comparison = np.expand_dims(np.concatenate([videos, videos_r, np.abs(videos - videos_r + 1)], axis=2), 0)
         latent_hist = (self._latent_probs / self._stored_steps).detach().cpu().numpy()
         latent_hist = ((latent_hist / latent_hist.max() * 255.0 )).astype(np.uint8)
 
@@ -694,11 +682,11 @@ class DreamerV2(RlAgent):
 
         # take some latent embeddings as initial
         with torch.cuda.amp.autocast(enabled=True):
-            losses, discovered_latents, wm_metrics = self.world_model.calculate_loss(
+            losses, discovered_states, wm_metrics = self.world_model.calculate_loss(
                     obs, a, r, discount_factors, first_flags)
 
             # NOTE: 'aten::nonzero' inside KL divergence is not currently supported on M1 Pro MPS device
-            # world_model_loss = torch.Tensor(1).to(self.device)
+            world_model_loss = torch.Tensor(0).to(self.device)
             world_model_loss = (losses['loss_reconstruction'] +
                                 losses['loss_reward_pred'] +
                                 losses['loss_kl_reg'] +
@@ -719,17 +707,14 @@ class DreamerV2(RlAgent):
         metrics |= wm_metrics
 
         with torch.cuda.amp.autocast(enabled=True):
-            # idx = torch.randperm(discovered_latents.size(0))
-            # initial_states = discovered_latents[idx]
-            # Dreamer does not shuffle
-            initial_states = discovered_latents
-
             losses_ac = defaultdict(
                 lambda: torch.zeros(1).to(self.device))
+            initial_states = State(discovered_states.determ.flatten(0, 1).unsqueeze(0).detach(),
+                                   discovered_states.stoch_logits.flatten(0, 1).unsqueeze(0).detach(),
+                                   discovered_states.stoch_.flatten(0, 1).unsqueeze(0).detach())
 
-            zs, _, next_zs, rewards, discount_factors, determs, actions = self.imagine_trajectory(
-                initial_states)
-            zs = torch.cat([determs.squeeze(), zs], dim=-1)
+            states, actions, rewards, discount_factors = self.imagine_trajectory(initial_states)
+            zs = states.combined
             rewards = self.world_model.reward_normalizer(rewards)
 
             # Discount prediction is disabled for dmc vision in Dreamer
@@ -738,14 +723,14 @@ class DreamerV2(RlAgent):
 
             # Discounted factors should be shifted as they predict whether next state is terminal
             # First discount factor on contrary is always 1 as it cannot lead to trajectory finish
-            discount_factors = torch.cat([torch.ones_like(discount_factors[:1]), discount_factors[:-2]], dim=0).detach()
+            discount_factors = torch.cat([torch.ones_like(discount_factors[:1]), discount_factors[:-1]], dim=0).detach()
 
             vs = self.critic.lambda_return(zs, rewards[:-1], discount_factors)
 
             # Ignore all factors after first is_finished state
             discount_factors = torch.cumprod(discount_factors, dim=0)
 
-            predicted_vs_dist = self.critic.estimate_value(zs[:-1].detach())
+            predicted_vs_dist = self.critic.estimate_value(zs.detach())
             losses_ac['loss_critic'] = -(predicted_vs_dist.log_prob(vs.detach())).mean()
 
             metrics['critic/avg_target_value'] = self.critic.target_critic(zs[1:]).mode.mean()
@@ -754,9 +739,9 @@ class DreamerV2(RlAgent):
 
             # last action should be ignored as it is not used to predict next state, thus no feedback
             # first value should be ignored as it is comes from replay buffer
-            action_dists = self.actor(zs[1:-1].detach())
+            action_dists = self.actor(zs[1:].detach())
             baseline = self.critic.target_critic(zs[1:-1]).mode
-            advantage = (vs[1:] - baseline).detach()
+            advantage = (vs[1:-1] - baseline).detach()
             losses_ac['loss_actor_reinforce'] += 0# -(self.rho * action_dists.base_dist.log_prob(actions[1:-1].detach()).unsqueeze(2) * discount_factors[:-2] * advantage).mean()
             losses_ac['loss_actor_dynamics_backprop'] = -((1 - self.rho) * (vs[1:]*discount_factors[:-1])).mean()
 

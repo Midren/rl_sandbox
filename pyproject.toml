@@ -24,6 +24,8 @@ unpackable = '^0.0.4'
 hydra-core = "^1.2.0"
 matplotlib = "^3.0.0"
 webdataset = "^0.2.20"
+jaxtyping = '^0.2.0'
+lovely_tensors = '^0.1.10'
 
 [tool.yapf]
 based_on_style = "pep8"

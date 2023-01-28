@@ -8,6 +8,7 @@ import random
 
 import torch
 from torch.profiler import profile, record_function, ProfilerActivity
+import lovely_tensors as lt
 
 from rl_sandbox.agents.random_agent import RandomAgent
 from rl_sandbox.agents.explorative_agent import ExplorativeAgent
@@ -33,11 +34,14 @@ class SummaryWriterMock():
 
 @hydra.main(version_base="1.2", config_path='config', config_name='config')
 def main(cfg: DictConfig):
+    lt.monkey_patch()
     # print(OmegaConf.to_yaml(cfg))
     torch.distributions.Distribution.set_default_validate_args(False)
     torch.backends.cudnn.benchmark = True
     torch.backends.cuda.matmul.allow_tf32 = True
 
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(cfg.seed)
     random.seed(cfg.seed)
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
