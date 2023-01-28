@@ -350,17 +350,13 @@ class WorldModel(nn.Module):
                                                            action)
         return posterior
 
-    def calculate_loss(self, obs: torch.Tensor, a: torch.Tensor, r: torch.Tensor,
-                       discount: torch.Tensor, first: torch.Tensor):
-        b, _, h, w = obs.shape  # s <- BxHxWx3
-
-        embed = self.encoder(obs)
-        embed_c = embed.reshape(b // self.cluster_size, self.cluster_size, -1)
-
-        a_c = a.reshape(-1, self.cluster_size, self.actions_num)
-        r_c = r.reshape(-1, self.cluster_size, 1)
-        d_c = discount.reshape(-1, self.cluster_size, 1)
-        first_c = first.reshape(-1, self.cluster_size, 1)
+    def calculate_loss(self, obs: Float[torch.Tensor, 'batch seq 3 h w'],
+                             a: Float[torch.Tensor, 'batch seq action_num'],
+                             r: Float[torch.Tensor, 'batch seq 1'],
+                             d: Float[torch.Tensor, 'batch seq 1'],
+                             first: Float[torch.Tensor, 'batch seq 1']):
+        embed = self.encoder(obs.flatten(0, 1))
+        embed_c = embed.reshape(*obs.shape[:2], -1)
 
         losses = defaultdict(lambda: torch.zeros(1).to(next(self.parameters()).device))
         metrics = defaultdict(lambda: torch.zeros(1).to(next(self.parameters()).device))
@@ -380,10 +376,10 @@ class WorldModel(nn.Module):
         priors = []
         posteriors = []
 
-        prev_state = self.get_initial_state(b // self.cluster_size)
+        prev_state = self.get_initial_state(obs.shape[0])
         for t in range(self.cluster_size):
             # s_t <- 1xB^xHxWx3
-            embed_t, a_t, first_t = embed_c[:, t].unsqueeze(0), a_c[:, t].unsqueeze(0), first_c[:, t].unsqueeze(0)
+            embed_t, a_t, first_t = embed_c[:, t].unsqueeze(0), a[:, t].unsqueeze(0), first[:, t].unsqueeze(0)
             a_t = a_t * (1 - first_t)
 
             prior, posterior = self.recurrent_model.forward(prev_state, embed_t, a_t)
@@ -402,12 +398,12 @@ class WorldModel(nn.Module):
         prior_logits = prior.stoch_logits
         posterior_logits = posterior.stoch_logits
 
-        losses['loss_reconstruction'] = -x_r.log_prob(obs).mean()
-        losses['loss_reward_pred'] = -r_pred.log_prob(r_c).mean()
-        losses['loss_discount_pred'] = -f_pred.log_prob(d_c).mean()
+        losses['loss_reconstruction'] = -x_r.log_prob(obs.flatten(0, 1)).mean()
+        losses['loss_reward_pred'] = -r_pred.log_prob(r).mean()
+        losses['loss_discount_pred'] = -f_pred.log_prob(d).mean()
         losses['loss_kl_reg'] = KL(prior_logits, posterior_logits)
 
-        metrics['reward_sae'] = (torch.abs(r_pred.mode - r_c)).mean()
+        metrics['reward_sae'] = (torch.abs(r_pred.mode - r)).mean()
         metrics['prior_entropy'] = Dist(prior_logits).entropy().mean()
         metrics['posterior_entropy'] = Dist(posterior_logits).entropy().mean()
 
@@ -668,23 +664,18 @@ class DreamerV2(RlAgent):
     def train(self, obs: Observations, a: Actions, r: Rewards, next_obs: Observations,
               is_finished: TerminationFlags, is_first: IsFirstFlags):
 
-        obs = self.preprocess_obs(self.from_np(obs))
-        a = self.from_np(a).to(torch.int64)
+        obs_c = self.preprocess_obs(self.from_np(obs))
+        a_c = self.from_np(a).to(torch.int64)
         if False:
             a = F.one_hot(a, num_classes=self.actions_num).squeeze()
-        r = self.from_np(r)
-        next_obs = self.preprocess_obs(self.from_np(next_obs))
-        discount_factors = (1 - self.from_np(is_finished).type(torch.float32))
-        first_flags = self.from_np(is_first).type(torch.float32)
-
-        number_of_zero_discounts = (1 - discount_factors).sum()
-        if number_of_zero_discounts > 0:
-            pass
+        r_c = self.from_np(r).unsqueeze(2)
+        discount_factors_c = (1 - self.from_np(is_finished).type(torch.float32)).unsqueeze(2)
+        first_flags_c = self.from_np(is_first).type(torch.float32).unsqueeze(2)
 
         # take some latent embeddings as initial
         with torch.cuda.amp.autocast(enabled=True):
             losses, discovered_states, wm_metrics = self.world_model.calculate_loss(
-                    obs, a, r, discount_factors, first_flags)
+                    obs_c, a_c, r_c, discount_factors_c, first_flags_c)
 
             # NOTE: 'aten::nonzero' inside KL divergence is not currently supported on M1 Pro MPS device
             world_model_loss = torch.Tensor(0).to(self.device)

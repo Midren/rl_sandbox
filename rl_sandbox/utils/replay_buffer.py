@@ -3,6 +3,7 @@ from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
+import torch
 from nptyping import Bool, Float, Int, NDArray, Shape
 
 Observation = NDArray[Shape["*,*,3"], Int]
@@ -83,13 +84,12 @@ class ReplayBuffer:
         batch_size: int,
         cluster_size: int = 1
     ) -> tuple[States, Actions, Rewards, States, TerminationFlags, IsFirstFlags]:
-        seq_num = batch_size // cluster_size
         # NOTE: constant creation of numpy arrays from self.rollout_len seems terrible for me
         s, a, r, n, t, is_first = [], [], [], [], [], []
         do_add_curr = self.curr_rollout is not None and len(self.curr_rollout.states) > cluster_size
         tot = self.total_num + (len(self.curr_rollout.states) if do_add_curr else 0)
         r_indeces = np.random.choice(len(self.rollouts) + int(do_add_curr),
-                                     seq_num,
+                                     batch_size,
                                      p=np.array(self.rollouts_len + deque([len(self.curr_rollout.states)] if do_add_curr else [])) / tot)
         s_indeces = []
         for r_idx in r_indeces:
@@ -126,3 +126,13 @@ class ReplayBuffer:
                 n.append(rollout.next_states)
         return (np.concatenate(s), np.concatenate(a), np.concatenate(r, dtype=np.float32),
             np.concatenate(n), np.concatenate(t), np.concatenate(is_first))
+
+class ReplayBufferDataset(torch.utils.data.IterableDataset):
+    def __init__(self, batch_size, cluster_size=1, maxlen=2e6):
+        self.buffer = ReplayBuffer(maxlen)
+        self.batch_size = batch_size
+        self.cluster_size = cluster_size
+
+    def __iter__(self):
+        while True:
+            yield self.buffer.sample(self.batch_size, self.cluster_size)

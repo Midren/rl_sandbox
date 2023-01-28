@@ -14,7 +14,7 @@ from rl_sandbox.agents.random_agent import RandomAgent
 from rl_sandbox.agents.explorative_agent import ExplorativeAgent
 from rl_sandbox.metrics import MetricsEvaluator
 from rl_sandbox.utils.env import Env
-from rl_sandbox.utils.replay_buffer import ReplayBuffer
+from rl_sandbox.utils.replay_buffer import ReplayBufferDataset
 from rl_sandbox.utils.persistent_replay_buffer import PersistentReplayBuffer
 from rl_sandbox.utils.rollout_generation import (collect_rollout, collect_rollout_num, iter_rollout,
                                                  fillup_replay_buffer)
@@ -31,6 +31,22 @@ class SummaryWriterMock():
     def add_image(*args, **kwargs):
         pass
 
+def eval(agent, env, writer, cfg, step):
+    with torch.no_grad():
+        rollouts = collect_rollout_num(env, cfg.rollout_num, agent)
+        # TODO: make logs visualization in separate process
+        metrics = MetricsEvaluator().calculate_metrics(rollouts)
+        for metric_name, metric in metrics.items():
+            writer.add_scalar(f'val/{metric_name}', metric, step)
+
+        if cfg.visualize:
+            rollouts = collect_rollout_num(env, 1, agent, collect_obs=True)
+
+            for rollout in rollouts:
+                video = np.expand_dims(rollout.observations.transpose(0, 3, 1, 2), 0)
+                writer.add_video('val/visualization', video, step)
+                # FIXME: Very bad from architecture point
+                agent.viz_log(rollout, writer, step)
 
 @hydra.main(version_base="1.2", config_path='config', config_name='config')
 def main(cfg: DictConfig):
@@ -48,10 +64,12 @@ def main(cfg: DictConfig):
 
     env: Env = hydra.utils.instantiate(cfg.env)
 
-    buff = ReplayBuffer()
-    fillup_replay_buffer(env, buff, max(cfg.training.prefill, cfg.training.batch_size))
-
-    metrics_evaluator = MetricsEvaluator()
+    dataset = ReplayBufferDataset(1, cfg.agent.get('batch_cluster_size', 1))
+    fillup_replay_buffer(env, dataset.buffer, max(cfg.training.prefill, cfg.training.batch_size))
+    loader = iter(torch.utils.data.DataLoader(dataset,
+                                         batch_size=cfg.training.batch_size,
+                                         num_workers=2,
+                                         pin_memory=True))
 
     # TODO: Implement smarter techniques for exploration
     #       (Plan2Explore, etc)
@@ -72,31 +90,15 @@ def main(cfg: DictConfig):
                  with_stack=True) if cfg.debug.profiler else None
 
     for i in tqdm(range(int(cfg.training.pretrain)), desc='Pretraining'):
-        s, a, r, n, f, first = buff.sample(cfg.training.batch_size,
-                                    cluster_size=cfg.agent.get('batch_cluster_size', 1))
+        s, a, r, n, f, first = next(loader)
         losses = agent.train(s, a, r, n, f, first)
         for loss_name, loss in losses.items():
             writer.add_scalar(f'pre_train/{loss_name}', loss, i)
 
         log_every_n = 25
-        st = int(cfg.training.pretrain) // log_every_n
-        # FIXME: extract logging to seperate entity to omit
-        # copy-paste
         if i % log_every_n == 0:
-            rollouts = collect_rollout_num(env, cfg.validation.rollout_num, agent)
-            # TODO: make logs visualization in separate process
-            metrics = metrics_evaluator.calculate_metrics(rollouts)
-            for metric_name, metric in metrics.items():
-                writer.add_scalar(f'val/{metric_name}', metric, -st + i/log_every_n)
-
-            if cfg.validation.visualize:
-                rollouts = collect_rollout_num(env, 1, agent, collect_obs=True)
-
-                for rollout in rollouts:
-                    video = np.expand_dims(rollout.observations.transpose(0, 3, 1, 2), 0)
-                    writer.add_video('val/visualization', video, -st + i/log_every_n)
-                    # FIXME: Very bad from architecture point
-                    agent.viz_log(rollout, writer, -st + i/log_every_n)
+            step = -(cfg.training.pretrain // log_every_n) + i/log_every_n
+            eval(agent, env, writer, cfg.validation, step)
 
     global_step = 0
     pbar = tqdm(total=cfg.training.steps, desc='Training')
@@ -105,13 +107,12 @@ def main(cfg: DictConfig):
 
         # TODO: add buffer end prioritarization
         for s, a, r, n, f, _ in iter_rollout(env, agent):
-            buff.add_sample(s, a, r, n, f)
+            dataset.buffer.add_sample(s, a, r, n, f)
 
             if global_step % cfg.training.gradient_steps_per_step == 0:
                 # NOTE: unintuitive that batch_size is now number of total
                 #       samples, but not amount of sequences for recurrent model
-                s, a, r, n, f, first = buff.sample(cfg.training.batch_size,
-                                            cluster_size=cfg.agent.get('batch_cluster_size', 1))
+                s, a, r, n, f, first = next(loader)
 
                 losses = agent.train(s, a, r, n, f, first)
                 if cfg.debug.profiler:
@@ -126,23 +127,7 @@ def main(cfg: DictConfig):
         # FIXME: Currently works only val_logs_every is multiplier of amount of steps per rollout
         ### Validation
         if global_step % cfg.training.val_logs_every == 0:
-            with torch.no_grad():
-                rollouts = collect_rollout_num(env, cfg.validation.rollout_num, agent)
-            # TODO: make logs visualization in separate process
-            metrics = metrics_evaluator.calculate_metrics(rollouts)
-            for metric_name, metric in metrics.items():
-                writer.add_scalar(f'val/{metric_name}', metric, global_step)
-
-            if cfg.validation.visualize:
-                rollouts = collect_rollout_num(env, 1, agent, collect_obs=True)
-
-                for rollout in rollouts:
-                    video = np.expand_dims(rollout.observations.transpose(0, 3, 1, 2), 0)
-                    writer.add_video('val/visualization', video, global_step)
-                    # FIXME: Very bad from architecture point
-                    with torch.no_grad():
-                        agent.viz_log(rollout, writer, global_step)
-
+            eval(agent, env, writer, cfg.validation, global_step)
         ### Checkpoint
         if global_step % cfg.training.save_checkpoint_every == 0:
             agent.save_ckpt(global_step, losses)
