@@ -604,35 +604,18 @@ class DreamerV2(RlAgent):
         else:
             return self._last_action.squeeze().detach().cpu().numpy()
 
-    def _generate_video(self, obs: Observation, actions: list[Action]):
-        obs = torch.from_numpy(obs.copy()).to(self.device)
-        obs = self.preprocess_obs(obs).unsqueeze(0)
-
-        if False:
-            actions = F.one_hot(self.from_np(actions).to(torch.int64),
-                               num_classes=self.actions_num).squeeze()
-        else:
-            actions = self.from_np(actions)
-        z_0 = Dist(self.world_model.get_latent(obs, actions[0].unsqueeze(0).unsqueeze(0), None)[1]).rsample().reshape(-1, 32 * 32).unsqueeze(0)
-        zs, _, _, rews, _, determs, _ = self.imagine_trajectory(z_0.squeeze(0), actions[1:], horizon=self.imagination_horizon - 1)
-        # video_r = self.world_model.image_predictor(torch.concat([determs, zs], dim=2)).rsample().cpu().detach().numpy()
-        video_r = self.world_model.image_predictor(torch.concat([torch.concat([torch.zeros_like(determs[0]).unsqueeze(0), determs]), torch.concat([z_0, zs])], dim=-1)).mode.cpu().detach().numpy()
-        video_r = ((video_r + 0.5) * 255.0).astype(np.uint8)
-        return video_r, rews.sum()
-
-    def _generate_video_with_update(self, obs: list[Observation], init_action: list[Action]):
+    def _generate_video(self, obs: list[Observation], actions: list[Action], update_num: int):
         obs = torch.from_numpy(obs.copy()).to(self.device)
         obs = self.preprocess_obs(obs)
-
-        if False:
-            action = F.one_hot(self.from_np(init_action).to(torch.int64),
-                               num_classes=self.actions_num).squeeze()
-        else:
-            action = self.from_np(init_action)
+        actions = self.from_np(actions)
         state = None
         video = []
         rews = []
-        for o, a in zip(obs, action):
+
+        z_0 = Dist(self.world_model.get_latent(obs[0].unsqueeze(0), actions[0].unsqueeze(0).unsqueeze(0), None)[1]).rsample().reshape(-1, 32 * 32).unsqueeze(0)
+        for idx, (o, a) in enumerate(list(zip(obs, actions))):
+            if idx >= update_num:
+                break
             determ, stoch_logits = self.world_model.get_latent(o.unsqueeze(0), a.unsqueeze(0).unsqueeze(0), state)
             z_0 = Dist(stoch_logits).rsample().reshape(-1, 32 * 32).unsqueeze(0)
             state = (determ, z_0)
@@ -641,27 +624,32 @@ class DreamerV2(RlAgent):
             rews.append(self.world_model.reward_predictor(inp).mode.item())
             video_r = ((video_r + 0.5) * 255.0).astype(np.uint8)
             video.append(video_r)
+
+        if update_num < len(obs):
+            zs, _, _, rews, _, determs, _ = self.imagine_trajectory(z_0.squeeze(0), actions[update_num+1:], horizon=self.imagination_horizon - 1 - update_num)
+            video_r = self.world_model.image_predictor(torch.concat([torch.concat([torch.zeros_like(determs[0]).unsqueeze(0), determs]), torch.concat([z_0, zs])], dim=-1)).mode.cpu().detach().numpy()
+            video_r = ((video_r + 0.5) * 255.0).astype(np.uint8)
+            video.append(video_r)
+
         return np.concatenate(video), sum(rews)
 
     def viz_log(self, rollout, logger, epoch_num):
         init_indeces = np.random.choice(len(rollout.states) - self.imagination_horizon, 3)
-        real_rewards = [rollout.rewards[idx:idx+ self.imagination_horizon].sum() for idx in init_indeces]
-        videos, imagined_rewards = zip(*[self._generate_video(obs_0.copy(), a_0) for obs_0, a_0 in zip(
-                rollout.next_states[init_indeces], [rollout.actions[idx:idx+ self.imagination_horizon] for idx in init_indeces])])
-        videos_r = np.concatenate(videos, axis=3)
-
-        videos_update, imagined_update_rewards = zip(*[self._generate_video_with_update(obs_0.copy(), a_0) for obs_0, a_0 in zip(
-                [rollout.next_states[idx:idx+ self.imagination_horizon] for idx in init_indeces],
-                [rollout.actions[idx:idx+ self.imagination_horizon] for idx in init_indeces])
-        ])
-        videos_r_update = np.concatenate(videos_update, axis=3)
 
         videos = np.concatenate([
             rollout.next_states[init_idx:init_idx + self.imagination_horizon].transpose(
                 0, 3, 1, 2) for init_idx in init_indeces
-        ],
-                                axis=3)
-        videos_comparison = np.expand_dims(np.concatenate([videos, videos_r_update, videos_r], axis=2), 0)
+        ], axis=3)
+
+        real_rewards = [rollout.rewards[idx:idx+ self.imagination_horizon].sum() for idx in init_indeces]
+
+        videos_r, imagined_rewards = zip(*[self._generate_video(obs_0.copy(), a_0, update_num=self.imagination_horizon//3) for obs_0, a_0 in zip(
+                [rollout.next_states[idx:idx+ self.imagination_horizon] for idx in init_indeces],
+                [rollout.actions[idx:idx+ self.imagination_horizon] for idx in init_indeces])
+        ])
+        videos_r = np.concatenate(videos_r, axis=3)
+
+        videos_comparison = np.expand_dims(np.concatenate([videos, videos_r, np.abs(videos - videos_r)], axis=2), 0)
         latent_hist = (self._latent_probs / self._stored_steps).detach().cpu().numpy()
         latent_hist = ((latent_hist / latent_hist.max() * 255.0 )).astype(np.uint8)
 
@@ -680,9 +668,7 @@ class DreamerV2(RlAgent):
         logger.add_video('val/dreamed_rollout', videos_comparison, epoch_num)
 
         rewards_err = torch.Tensor([torch.abs(imagined_rewards[i] - real_rewards[i]) for i in range(len(imagined_rewards))]).mean()
-        rewards_update_err = np.mean([np.abs(imagined_update_rewards[i] - real_rewards[i]) for i in range(len(imagined_rewards))])
         logger.add_scalar('val/img_reward_err', rewards_err.item(), epoch_num)
-        logger.add_scalar('val/img_update_reward_err', rewards_update_err.item(), epoch_num)
 
         logger.add_scalar(f'val/reward', real_rewards[0], epoch_num)
 
