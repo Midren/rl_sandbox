@@ -11,7 +11,7 @@ world_model_lr: 3e-4
 
 # ActorCritic parameters
 discount_factor: 0.999
-imagination_horizon: 16
+imagination_horizon: 15
 
 actor_lr: 8e-5
 # mixing of reinforce and maximizing value func
