@@ -609,14 +609,14 @@ class DreamerV2(RlAgent):
             state = self.world_model.get_latent(o, a.unsqueeze(0).unsqueeze(0), state)
             video_r = self.world_model.image_predictor(state.combined).mode.cpu().detach().numpy()
             rews.append(self.world_model.reward_predictor(state.combined).mode.item())
-            video_r = ((video_r + 0.5) * 255.0).astype(np.uint8)
+            video_r = (video_r + 0.5)
             video.append(video_r)
 
         if update_num < len(obs):
             states, _, rews, _ = self.imagine_trajectory(state, actions[update_num+1:].unsqueeze(1), horizon=self.imagination_horizon - 1 - update_num)
             states = State.stack([state, states])
             video_r = self.world_model.image_predictor(states.combined).mode.cpu().detach().numpy()
-            video_r = ((video_r + 0.5) * 255.0).astype(np.uint8)
+            video_r = (video_r + 0.5)
             video.append(video_r)
 
         return np.concatenate(video), sum(rews)
@@ -627,7 +627,7 @@ class DreamerV2(RlAgent):
         videos = np.concatenate([
             rollout.next_states[init_idx:init_idx + self.imagination_horizon].transpose(
                 0, 3, 1, 2) for init_idx in init_indeces
-        ], axis=3)
+        ], axis=3).astype(np.float32) / 255.0
 
         real_rewards = [rollout.rewards[idx:idx+ self.imagination_horizon].sum() for idx in init_indeces]
 
@@ -638,6 +638,7 @@ class DreamerV2(RlAgent):
         videos_r = np.concatenate(videos_r, axis=3)
 
         videos_comparison = np.expand_dims(np.concatenate([videos, videos_r, np.abs(videos - videos_r + 1)], axis=2), 0)
+        videos_comparison = (videos_comparison * 255.0).astype(np.uint8)
         latent_hist = (self._latent_probs / self._stored_steps).detach().cpu().numpy()
         latent_hist = ((latent_hist / latent_hist.max() * 255.0 )).astype(np.uint8)
 
