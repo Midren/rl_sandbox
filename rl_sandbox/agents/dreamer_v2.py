@@ -541,8 +541,11 @@ class DreamerV2(RlAgent):
                torch.Tensor]:
         if horizon is None:
             horizon = self.imagination_horizon
-        states, actions, rewards, ts = [], [], [], []
+
         prev_state = init_state
+        prev_action = torch.zeros_like(self.actor(prev_state.combined.detach()).mode)
+        states, actions, rewards, ts = [init_state], [prev_action], [torch.Tensor(0, device=prev_action.device)], [torch.Tensor(1, device=prev_action.device)]
+
         for i in range(horizon):
             if precomp_actions is not None:
                 a = precomp_actions[i].unsqueeze(0)
@@ -614,7 +617,6 @@ class DreamerV2(RlAgent):
 
         if update_num < len(obs):
             states, _, rews, _ = self.imagine_trajectory(state, actions[update_num+1:].unsqueeze(1), horizon=self.imagination_horizon - 1 - update_num)
-            states = State.stack([state, states])
             video_r = self.world_model.image_predictor(states.combined).mode.cpu().detach().numpy()
             video_r = (video_r + 0.5)
             video.append(video_r)
