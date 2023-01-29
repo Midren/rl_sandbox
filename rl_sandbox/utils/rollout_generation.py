@@ -55,6 +55,8 @@ def iter_rollout(
     agent.reset()
 
     prev_action = np.zeros_like(agent.get_action(state))
+    prev_reward = 0
+    prev_terminated = False
     while not terminated:
         action = agent.get_action(state)
 
@@ -63,9 +65,11 @@ def iter_rollout(
         # FIXME: will break for non-DM
         obs = env.render() if collect_obs else None
         # if collect_obs and isinstance(env, dmEnv):
-        yield state, prev_action, reward, new_state, terminated, obs
+        yield state, prev_action, prev_reward, new_state, prev_terminated, obs
         state = new_state
         prev_action = action
+        prev_reward = reward
+        prev_terminated = terminated
 
 
 def collect_rollout(env: Env,
