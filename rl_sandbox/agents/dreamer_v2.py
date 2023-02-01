@@ -127,6 +127,35 @@ class State:
                      torch.cat([state.stoch_logits for state in states], dim=dim),
                      stochs)
 
+class GRUCell(nn.Module):
+  def __init__(self, input_size, hidden_size, norm=False, update_bias=-1, **kwargs):
+    super().__init__()
+    self._size = hidden_size
+    self._act = torch.tanh
+    self._norm = norm
+    self._update_bias = update_bias
+    self._layer = nn.Linear(input_size + hidden_size, 3 * hidden_size, bias=norm is not None, **kwargs)
+    if norm:
+      self._norm = nn.LayerNorm(3 * hidden_size)
+
+  @property
+  def state_size(self):
+    return self._size
+
+  def forward(self, x, h):
+    state = h
+    parts = self._layer(torch.concat([x, state], -1))
+    if self._norm:
+      dtype = parts.dtype
+      parts = self._norm(parts.float())
+      parts = parts.to(dtype=dtype)
+    reset, cand, update = parts.chunk(3, dim=-1)
+    reset = torch.sigmoid(reset)
+    cand = self._act(reset * cand)
+    update = torch.sigmoid(update + self._update_bias)
+    output = update * cand + (1 - update) * state
+    return output, output
+
 class RSSM(nn.Module):
     """
     Recurrent State Space Model
@@ -164,8 +193,7 @@ class RSSM(nn.Module):
             # nn.LayerNorm(hidden_size),
             nn.ELU(inplace=True)
         )
-        self.determ_recurrent = nn.GRU(input_size=hidden_size,
-                                       hidden_size=hidden_size)  # Dreamer gru '_cell'
+        self.determ_recurrent = GRUCell(input_size=hidden_size, hidden_size=hidden_size, norm=True)  # Dreamer gru '_cell'
 
         # Calculate stochastic state from prior embed
         # shared between all ensemble models
@@ -318,13 +346,13 @@ class WorldModel(nn.Module):
         self.reward_predictor = fc_nn_generator(rssm_dim + latent_dim * latent_classes,
                                                 1,
                                                 hidden_size=400,
-                                                num_layers=4,
+                                                num_layers=5,
                                                 intermediate_activation=nn.ELU,
                                                 final_activation=DistLayer('mse'))
         self.discount_predictor = fc_nn_generator(rssm_dim + latent_dim * latent_classes,
                                                   1,
                                                   hidden_size=400,
-                                                  num_layers=4,
+                                                  num_layers=5,
                                                   intermediate_activation=nn.ELU,
                                                   final_activation=DistLayer('binary'))
         self.reward_normalizer = Normalizer(momentum=1.00, scale=1.0, eps=1e-8)
@@ -402,11 +430,13 @@ class WorldModel(nn.Module):
         prior_logits = prior.stoch_logits
         posterior_logits = posterior.stoch_logits
 
-        losses['loss_reconstruction'] = -x_r.log_prob(obs).mean()
-        losses['loss_reward_pred'] = -r_pred.log_prob(r_c).mean()
-        losses['loss_discount_pred'] = -f_pred.log_prob(d_c).mean()
+        losses['loss_reconstruction'] = -x_r.log_prob(obs).float().mean()
+        losses['loss_reward_pred'] = -r_pred.log_prob(r_c).float().mean()
+        losses['loss_discount_pred'] = -f_pred.log_prob(d_c).float().mean()
         losses['loss_kl_reg'] = KL(prior_logits, posterior_logits)
 
+        metrics['reward_mean'] = r.mean()
+        metrics['reward_std'] = r.std()
         metrics['reward_sae'] = (torch.abs(r_pred.mode - r_c)).mean()
         metrics['prior_entropy'] = Dist(prior_logits).entropy().mean()
         metrics['posterior_entropy'] = Dist(posterior_logits).entropy().mean()
@@ -428,13 +458,13 @@ class ImaginativeCritic(nn.Module):
         self.critic = fc_nn_generator(latent_dim,
                                       1,
                                       400,
-                                      4,
+                                      5,
                                       intermediate_activation=nn.ELU,
                                       final_activation=DistLayer('mse'))
         self.target_critic = fc_nn_generator(latent_dim,
                                              1,
                                              400,
-                                             4,
+                                             5,
                                              intermediate_activation=nn.ELU,
                                              final_activation=DistLayer('mse'))
         self.target_critic.requires_grad_(False)
@@ -462,7 +492,8 @@ class ImaginativeCritic(nn.Module):
                 self.lambda_ * v_lambdas[-1])
             v_lambdas.append(v_lambda)
 
-        return torch.stack(list(reversed(v_lambdas)))
+        # FIXME: it copies array, so it is quite slow
+        return torch.stack(v_lambdas).flip(dims=(0,))[:-1]
 
     def lambda_return(self, zs, rs, ds):
         vs = self.target_critic(zs).mode
@@ -493,8 +524,10 @@ class DreamerV2(RlAgent):
             world_model_lr: float,
             actor_lr: float,
             critic_lr: float,
-            device_type: str = 'cpu'):
+            device_type: str = 'cpu',
+            logger = None):
 
+        self.logger = logger
         self.device = device_type
         self.imagination_horizon = imagination_horizon
         self.cluster_size = batch_cluster_size
@@ -511,7 +544,7 @@ class DreamerV2(RlAgent):
         self.actor = fc_nn_generator(rssm_dim + latent_dim * latent_classes,
                                      actions_num * 2 if action_type == 'continuous' else actions_num,
                                      400,
-                                     4,
+                                     5,
                                      intermediate_activation=nn.ELU,
                                      final_activation=DistLayer('normal_trunc' if action_type == 'continuous' else 'onehot')).to(device_type)
 
@@ -543,8 +576,11 @@ class DreamerV2(RlAgent):
             horizon = self.imagination_horizon
 
         prev_state = init_state
-        prev_action = torch.zeros_like(self.actor(prev_state.combined.detach()).mode)
-        states, actions, rewards, ts = [init_state], [prev_action], [torch.Tensor(0, device=prev_action.device)], [torch.Tensor(1, device=prev_action.device)]
+        prev_action = torch.zeros_like(self.actor(prev_state.combined.detach()).mean)
+        states, actions, rewards, ts = ([init_state],
+                                       [prev_action],
+                                       [self.world_model.reward_predictor(init_state.combined).mode],
+                                       [torch.ones(prev_action.shape[:-1] + (1,), device=prev_action.device)])
 
         for i in range(horizon):
             if precomp_actions is not None:
@@ -605,9 +641,9 @@ class DreamerV2(RlAgent):
         video = []
         rews = []
 
-        state = self.world_model.get_latent(obs[0], actions[0].unsqueeze(0).unsqueeze(0), None)
+        state = None
         for idx, (o, a) in enumerate(list(zip(obs, actions))):
-            if idx >= update_num:
+            if idx > update_num:
                 break
             state = self.world_model.get_latent(o, a.unsqueeze(0).unsqueeze(0), state)
             video_r = self.world_model.image_predictor(state.combined).mode.cpu().detach().numpy()
@@ -615,23 +651,26 @@ class DreamerV2(RlAgent):
             video_r = (video_r + 0.5)
             video.append(video_r)
 
+        rews = torch.Tensor(rews).to(obs.device)
+
         if update_num < len(obs):
-            states, _, rews, _ = self.imagine_trajectory(state, actions[update_num+1:].unsqueeze(1), horizon=self.imagination_horizon - 1 - update_num)
-            video_r = self.world_model.image_predictor(states.combined).mode.cpu().detach().numpy()
+            states, _, rews_2, _ = self.imagine_trajectory(state, actions[update_num+1:].unsqueeze(1), horizon=self.imagination_horizon - 1 - update_num)
+            rews = torch.cat([rews, rews_2[1:].squeeze()])
+            video_r = self.world_model.image_predictor(states.combined[1:]).mode.cpu().detach().numpy()
             video_r = (video_r + 0.5)
             video.append(video_r)
 
-        return np.concatenate(video), sum(rews)
+        return np.concatenate(video), rews
 
     def viz_log(self, rollout, logger, epoch_num):
-        init_indeces = np.random.choice(len(rollout.states) - self.imagination_horizon, 3)
+        init_indeces = np.random.choice(len(rollout.states) - self.imagination_horizon, 5)
 
         videos = np.concatenate([
             rollout.next_states[init_idx:init_idx + self.imagination_horizon].transpose(
                 0, 3, 1, 2) for init_idx in init_indeces
         ], axis=3).astype(np.float32) / 255.0
 
-        real_rewards = [rollout.rewards[idx:idx+ self.imagination_horizon].sum() for idx in init_indeces]
+        real_rewards = [rollout.rewards[idx:idx+ self.imagination_horizon] for idx in init_indeces]
 
         videos_r, imagined_rewards = zip(*[self._generate_video(obs_0.copy(), a_0, update_num=self.imagination_horizon//3) for obs_0, a_0 in zip(
                 [rollout.next_states[idx:idx+ self.imagination_horizon] for idx in init_indeces],
@@ -639,7 +678,7 @@ class DreamerV2(RlAgent):
         ])
         videos_r = np.concatenate(videos_r, axis=3)
 
-        videos_comparison = np.expand_dims(np.concatenate([videos, videos_r, np.abs(videos - videos_r + 1)], axis=2), 0)
+        videos_comparison = np.expand_dims(np.concatenate([videos, videos_r, np.abs(videos - videos_r + 1)/2], axis=2), 0)
         videos_comparison = (videos_comparison * 255.0).astype(np.uint8)
         latent_hist = (self._latent_probs / self._stored_steps).detach().cpu().numpy()
         latent_hist = ((latent_hist / latent_hist.max() * 255.0 )).astype(np.uint8)
@@ -656,12 +695,12 @@ class DreamerV2(RlAgent):
             pass
         logger.add_image('val/latent_probs', latent_hist, epoch_num, dataformats='HW')
         logger.add_image('val/latent_probs_sorted', np.sort(latent_hist, axis=1), epoch_num, dataformats='HW')
-        logger.add_video('val/dreamed_rollout', videos_comparison, epoch_num)
+        logger.add_video('val/dreamed_rollout', videos_comparison, epoch_num, fps=20)
 
-        rewards_err = torch.Tensor([torch.abs(imagined_rewards[i] - real_rewards[i]) for i in range(len(imagined_rewards))]).mean()
+        rewards_err = torch.Tensor([torch.abs(sum(imagined_rewards[i]) - real_rewards[i].sum()) for i in range(len(imagined_rewards))]).mean()
         logger.add_scalar('val/img_reward_err', rewards_err.item(), epoch_num)
 
-        logger.add_scalar(f'val/reward', real_rewards[0], epoch_num)
+        logger.add_scalar(f'val/reward', real_rewards[0].sum(), epoch_num)
 
     def from_np(self, arr: np.ndarray):
         arr = torch.from_numpy(arr) if isinstance(arr, np.ndarray) else arr
@@ -724,7 +763,7 @@ class DreamerV2(RlAgent):
             # as trajectory will not abruptly stop
             discount_factors = self.critic.gamma * torch.ones_like(rewards)
 
-            # Discounted factors should be shifted as they predict whether next state is terminal
+            # Discounted factors should be shifted as they predict whether next state cannot be used
             # First discount factor on contrary is always 1 as it cannot lead to trajectory finish
             discount_factors = torch.cat([torch.ones_like(discount_factors[:1]), discount_factors[:-1]], dim=0).detach()
 
@@ -733,8 +772,8 @@ class DreamerV2(RlAgent):
             # Ignore all factors after first is_finished state
             discount_factors = torch.cumprod(discount_factors, dim=0)
 
-            predicted_vs_dist = self.critic.estimate_value(zs.detach())
-            losses_ac['loss_critic'] = -(predicted_vs_dist.log_prob(vs.detach())).mean()
+            predicted_vs_dist = self.critic.estimate_value(zs[:-1].detach())
+            losses_ac['loss_critic'] = -(predicted_vs_dist.log_prob(vs.detach()).unsqueeze(2)*discount_factors[:-1]).mean()
 
             metrics['critic/avg_target_value'] = self.critic.target_critic(zs[1:]).mode.mean()
             metrics['critic/avg_lambda_value'] = vs.mean()
@@ -742,17 +781,17 @@ class DreamerV2(RlAgent):
 
             # last action should be ignored as it is not used to predict next state, thus no feedback
             # first value should be ignored as it is comes from replay buffer
-            action_dists = self.actor(zs[1:].detach())
-            baseline = self.critic.target_critic(zs[1:-1]).mode
-            advantage = (vs[1:-1] - baseline).detach()
+            action_dists = self.actor(zs[:-2].detach())
+            baseline = self.critic.target_critic(zs[:-2]).mode
+            advantage = (vs[1:] - baseline).detach()
             losses_ac['loss_actor_reinforce'] += 0# -(self.rho * action_dists.base_dist.log_prob(actions[1:-1].detach()).unsqueeze(2) * discount_factors[:-2] * advantage).mean()
-            losses_ac['loss_actor_dynamics_backprop'] = -((1 - self.rho) * (vs[1:]*discount_factors[:-1])).mean()
+            losses_ac['loss_actor_dynamics_backprop'] = -((1 - self.rho) * (vs[1:]*discount_factors[:-2])).mean()
 
             def calculate_entropy(dist):
                 return dist.entropy().unsqueeze(2)
                 # return dist.base_dist.base_dist.entropy().unsqueeze(2)
 
-            losses_ac['loss_actor_entropy'] += -(self.eta * calculate_entropy(action_dists)*discount_factors[:-1]).mean()
+            losses_ac['loss_actor_entropy'] += -(self.eta * calculate_entropy(action_dists)*discount_factors[:-2]).mean()
             losses_ac['loss_actor'] = losses_ac['loss_actor_reinforce'] + losses_ac['loss_actor_dynamics_backprop'] + losses_ac['loss_actor_entropy']
 
             # mean and std are estimated statistically as tanh transformation is used

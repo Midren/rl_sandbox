@@ -10,7 +10,7 @@ def fc_nn_generator(input_num: int,
     assert num_layers >= 3
     layers = []
     layers.append(nn.Linear(input_num, hidden_size))
-    layers.append(nn.ReLU(inplace=True))
+    layers.append(intermediate_activation(inplace=True))
     for _ in range(num_layers - 2):
         layers.append(nn.Linear(hidden_size, hidden_size))
         layers.append(intermediate_activation(inplace=True))

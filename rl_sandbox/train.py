@@ -31,7 +31,6 @@ class SummaryWriterMock():
     def add_image(*args, **kwargs):
         pass
 
-
 @hydra.main(version_base="1.2", config_path='config', config_name='config')
 def main(cfg: DictConfig):
     lt.monkey_patch()
@@ -55,6 +54,8 @@ def main(cfg: DictConfig):
 
     # TODO: Implement smarter techniques for exploration
     #       (Plan2Explore, etc)
+    writer = SummaryWriter()
+
     agent = hydra.utils.instantiate(cfg.agent,
                             obs_space_num=env.observation_space.shape[0],
                             # FIXME: feels bad
@@ -62,9 +63,8 @@ def main(cfg: DictConfig):
                             # FIXME: currently only continuous tasks
                             actions_num=env.action_space.shape[0],
                             action_type='continuous',
-                            device_type=cfg.device_type)
-
-    writer = SummaryWriter()
+                            device_type=cfg.device_type,
+                            logger=writer)
 
     prof = profile(activities=[ProfilerActivity.CUDA, ProfilerActivity.CPU],
                  on_trace_ready=torch.profiler.tensorboard_trace_handler('runs/profile_dreamer'),
@@ -99,6 +99,7 @@ def main(cfg: DictConfig):
                     agent.viz_log(rollout, writer, -st + i/log_every_n)
 
     global_step = 0
+    prev_global_step = 0
     pbar = tqdm(total=cfg.training.steps, desc='Training')
     while global_step < cfg.training.steps:
         ### Training and exploration
@@ -123,9 +124,9 @@ def main(cfg: DictConfig):
             global_step += cfg.env.repeat_action_num
             pbar.update(cfg.env.repeat_action_num)
 
-        # FIXME: Currently works only val_logs_every is multiplier of amount of steps per rollout
+        # FIXME: find more appealing solution
         ### Validation
-        if global_step % cfg.training.val_logs_every == 0:
+        if (global_step % cfg.training.val_logs_every) < (prev_global_step % cfg.training.val_logs_every):
             with torch.no_grad():
                 rollouts = collect_rollout_num(env, cfg.validation.rollout_num, agent)
             # TODO: make logs visualization in separate process
@@ -144,8 +145,11 @@ def main(cfg: DictConfig):
                         agent.viz_log(rollout, writer, global_step)
 
         ### Checkpoint
-        if global_step % cfg.training.save_checkpoint_every == 0:
+        if (global_step % cfg.training.save_checkpoint_every) < (prev_global_step % cfg.training.save_checkpoint_every):
             agent.save_ckpt(global_step, losses)
+
+        prev_global_step = global_step
+
     if cfg.debug.profiler:
         prof.stop()
 
