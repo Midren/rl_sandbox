@@ -209,9 +209,9 @@ class DmEnv(Env):
         rew = 0
         for _ in range(repeat_num - 1):
             ts =  self.env.step(action)
-            rew += ts.reward or 0.0
             if ts.last():
                 break
+            rew += ts.reward or 0.0
         if repeat_num == 1 or not ts.last():
             env_res = self._uncode_ts(self.env.step(action))
         else:
