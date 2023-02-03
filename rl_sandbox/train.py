@@ -94,7 +94,7 @@ def main(cfg: DictConfig):
 
                 for rollout in rollouts:
                     video = np.expand_dims(rollout.observations.transpose(0, 3, 1, 2), 0)
-                    writer.add_video('val/visualization', video, -st + i/log_every_n)
+                    writer.add_video('val/visualization', video, -st + i/log_every_n, fps=20)
                     # FIXME: Very bad from architecture point
                     agent.viz_log(rollout, writer, -st + i/log_every_n)
 
