@@ -710,9 +710,9 @@ class DreamerV2(RlAgent):
               is_finished: TerminationFlags, is_first: IsFirstFlags):
 
         obs = self.preprocess_obs(self.from_np(obs))
-        a = self.from_np(a).to(torch.int64)
+        a = self.from_np(a)
         if False:
-            a = F.one_hot(a, num_classes=self.actions_num).squeeze()
+            a = F.one_hot(a.to(torch.int64), num_classes=self.actions_num).squeeze()
         r = self.from_np(r)
         next_obs = self.preprocess_obs(self.from_np(next_obs))
         discount_factors = (1 - self.from_np(is_finished).type(torch.float32))
