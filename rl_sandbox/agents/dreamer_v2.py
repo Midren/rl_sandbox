@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torchvision as tv
 import torch.distributions as td
 from torch import nn
 from torch.nn import functional as F
@@ -16,6 +17,7 @@ from rl_sandbox.utils.replay_buffer import (Action, Actions, Observation,
                                             Observations, Rewards,
                                             TerminationFlags, IsFirstFlags)
 from rl_sandbox.utils.dists import TruncatedNormal
+from rl_sandbox.vision.dino import ViTFeat
 
 class View(nn.Module):
 
@@ -325,7 +327,7 @@ class Normalizer(nn.Module):
 class WorldModel(nn.Module):
 
     def __init__(self, batch_cluster_size, latent_dim, latent_classes, rssm_dim,
-                 actions_num, kl_loss_scale, kl_loss_balancing, kl_free_nats):
+                 actions_num, kl_loss_scale, kl_loss_balancing, kl_free_nats, decoder_attention):
         super().__init__()
         self.kl_free_nats = kl_free_nats
         self.kl_beta = kl_loss_scale
@@ -356,6 +358,11 @@ class WorldModel(nn.Module):
                                                   intermediate_activation=nn.ELU,
                                                   final_activation=DistLayer('binary'))
         self.reward_normalizer = Normalizer(momentum=1.00, scale=1.0, eps=1e-8)
+        self.decoder_attention = decoder_attention
+        if decoder_attention:
+            self.dino_patch_size = 8
+            self.dino_vit = ViTFeat("/dino/dino_vitbase8_pretrain/dino_vitbase8_pretrain.pth",  768,  'base', 'k', self.dino_patch_size)
+            self.dino_vit.requires_grad_(False)
 
     def get_initial_state(self, batch_size: int = 1, seq_size: int = 1):
         device = next(self.parameters()).device
@@ -382,7 +389,8 @@ class WorldModel(nn.Module):
                        discount: torch.Tensor, first: torch.Tensor):
         b, _, h, w = obs.shape  # s <- BxHxWx3
 
-        embed = self.encoder(obs)
+        reshaper = tv.transforms.Resize((64, 64))
+        embed = self.encoder(reshaper(obs))
         embed_c = embed.reshape(b // self.cluster_size, self.cluster_size, -1)
 
         a_c = a.reshape(-1, self.cluster_size, self.actions_num)
@@ -430,7 +438,15 @@ class WorldModel(nn.Module):
         prior_logits = prior.stoch_logits
         posterior_logits = posterior.stoch_logits
 
-        losses['loss_reconstruction'] = -x_r.log_prob(obs).float().mean()
+        if self.decoder_attention:
+            ToTensor = tv.transforms.Normalize((0.485, 0.456, 0.406),
+                                               (0.229, 0.224, 0.225))
+            feat, attentions = self.dino_vit(ToTensor(obs + 0.5))
+            attention = (F.interpolate(attentions[0, :, 0, 1:].reshape(-1, 1, 16, 16).mean(0).unsqueeze(0), scale_factor=4, mode='bilinear')).detach()
+        else:
+            attention = 1
+
+        losses['loss_reconstruction'] = -((x_r.base_dist.log_prob(reshaper(obs)) * attention).float()).mean(0).sum()*64*64*3/37
         losses['loss_reward_pred'] = -r_pred.log_prob(r_c).float().mean()
         losses['loss_discount_pred'] = -f_pred.log_prob(d_c).float().mean()
         losses['loss_kl_reg'] = KL(prior_logits, posterior_logits)
@@ -524,6 +540,7 @@ class DreamerV2(RlAgent):
             world_model_lr: float,
             actor_lr: float,
             critic_lr: float,
+            world_model_decoder_attn: bool,
             device_type: str = 'cpu',
             logger = None):
 
@@ -539,7 +556,8 @@ class DreamerV2(RlAgent):
 
         self.world_model = WorldModel(batch_cluster_size, latent_dim, latent_classes,
                                       rssm_dim, actions_num, kl_loss_scale,
-                                      kl_loss_balancing, kl_loss_free_nats).to(device_type)
+                                      kl_loss_balancing, kl_loss_free_nats,
+                                      world_model_decoder_attn).to(device_type)
 
         self.actor = fc_nn_generator(rssm_dim + latent_dim * latent_classes,
                                      actions_num * 2 if action_type == 'continuous' else actions_num,
@@ -606,12 +624,13 @@ class DreamerV2(RlAgent):
         self._stored_steps = 0
 
     @staticmethod
-    def preprocess_obs(obs: torch.Tensor):
+    def preprocess_obs(obs: torch.Tensor, reshape: bool = True):
         # FIXME: move to dataloader in replay buffer
         order = list(range(len(obs.shape)))
         # Swap channel from last to 3 from last
         order = order[:-3] + [order[-1]] + order[-3:-1]
-        return ((obs.type(torch.float32) / 255.0) - 0.5).permute(order)
+        reshaper = tv.transforms.Resize((64, 64)) if reshape else nn.Identity()
+        return reshaper(((obs.type(torch.float32) / 255.0) - 0.5).permute(order))
         # return obs.type(torch.float32).permute(order)
 
     def get_action(self, obs: Observation) -> Action:
@@ -666,7 +685,7 @@ class DreamerV2(RlAgent):
         init_indeces = np.random.choice(len(rollout.states) - self.imagination_horizon, 5)
 
         videos = np.concatenate([
-            rollout.next_states[init_idx:init_idx + self.imagination_horizon].transpose(
+            rollout.next_states[init_idx:init_idx + self.imagination_horizon][:, ::2, ::2, :].transpose(
                 0, 3, 1, 2) for init_idx in init_indeces
         ], axis=3).astype(np.float32) / 255.0
 
@@ -709,12 +728,11 @@ class DreamerV2(RlAgent):
     def train(self, obs: Observations, a: Actions, r: Rewards, next_obs: Observations,
               is_finished: TerminationFlags, is_first: IsFirstFlags):
 
-        obs = self.preprocess_obs(self.from_np(obs))
+        obs = self.preprocess_obs(self.from_np(obs), reshape=False)
         a = self.from_np(a)
         if False:
             a = F.one_hot(a.to(torch.int64), num_classes=self.actions_num).squeeze()
         r = self.from_np(r)
-        next_obs = self.preprocess_obs(self.from_np(next_obs))
         discount_factors = (1 - self.from_np(is_finished).type(torch.float32))
         first_flags = self.from_np(is_first).type(torch.float32)
 

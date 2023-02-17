@@ -8,6 +8,7 @@ kl_loss_scale: 1.0
 kl_loss_balancing: 0.8
 kl_loss_free_nats: 1.0
 world_model_lr: 3e-4
+world_model_decoder_attn: true
 
 # ActorCritic parameters
 discount_factor: 0.999
