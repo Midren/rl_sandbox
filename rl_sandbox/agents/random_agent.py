@@ -1,5 +1,6 @@
 import numpy as np
 from nptyping import Float, NDArray, Shape
+from pathlib import Path
 
 from rl_sandbox.agents.rl_agent import RlAgent
 from rl_sandbox.utils.env import Env
@@ -18,4 +19,7 @@ class RandomAgent(RlAgent):
         return dict()
 
     def save_ckpt(self, epoch_num: int, losses: dict[str, float]):
+        pass
+
+    def load_ckpt(self, ckpt_path: Path):
         pass

@@ -1,5 +1,6 @@
 from typing import Any
 from abc import ABCMeta, abstractmethod
+from pathlib import Path
 
 from rl_sandbox.utils.replay_buffer import Action, State, States, Actions, Rewards, TerminationFlags
 
@@ -22,4 +23,8 @@ class RlAgent(metaclass=ABCMeta):
 
     @abstractmethod
     def save_ckpt(self, epoch_num: int, losses: dict[str, float]):
+        pass
+
+    @abstractmethod
+    def load_ckpt(self, ckpt_path: Path):
         pass

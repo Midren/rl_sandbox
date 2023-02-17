@@ -1,24 +1,19 @@
 import hydra
 import numpy as np
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from torch.utils.tensorboard.writer import SummaryWriter
 from tqdm import tqdm
-from pathlib import Path
 import random
 
 import torch
-from torch.profiler import profile, record_function, ProfilerActivity
+from torch.profiler import profile, ProfilerActivity
 import lovely_tensors as lt
 
-from rl_sandbox.agents.random_agent import RandomAgent
-from rl_sandbox.agents.explorative_agent import ExplorativeAgent
 from rl_sandbox.metrics import MetricsEvaluator
 from rl_sandbox.utils.env import Env
 from rl_sandbox.utils.replay_buffer import ReplayBuffer
-from rl_sandbox.utils.persistent_replay_buffer import PersistentReplayBuffer
-from rl_sandbox.utils.rollout_generation import (collect_rollout, collect_rollout_num, iter_rollout,
+from rl_sandbox.utils.rollout_generation import (collect_rollout_num, iter_rollout,
                                                  fillup_replay_buffer)
-from rl_sandbox.utils.schedulers import LinearScheduler
 
 
 class SummaryWriterMock():
@@ -30,6 +25,27 @@ class SummaryWriterMock():
 
     def add_image(*args, **kwargs):
         pass
+
+
+def val_logs(agent, val_cfg: DictConfig, env, global_step, writer):
+    with torch.no_grad():
+        rollouts = collect_rollout_num(env, val_cfg.rollout_num, agent)
+    # TODO: make logs visualization in separate process
+    # Possibly make the data loader
+    metrics = MetricsEvaluator().calculate_metrics(rollouts)
+    for metric_name, metric in metrics.items():
+        writer.add_scalar(f'val/{metric_name}', metric, global_step)
+
+    if val_cfg.visualize:
+        rollouts = collect_rollout_num(env, 1, agent, collect_obs=True)
+
+        for rollout in rollouts:
+            video = np.expand_dims(rollout.observations.transpose(0, 3, 1, 2), 0)
+            writer.add_video('val/visualization', video, global_step, fps=20)
+            # FIXME: Very bad from architecture point
+            with torch.no_grad():
+                agent.viz_log(rollout, writer, global_step)
+
 
 @hydra.main(version_base="1.2", config_path='config', config_name='config')
 def main(cfg: DictConfig):
@@ -50,11 +66,9 @@ def main(cfg: DictConfig):
     buff = ReplayBuffer()
     fillup_replay_buffer(env, buff, max(cfg.training.prefill, cfg.training.batch_size))
 
-    metrics_evaluator = MetricsEvaluator()
-
     # TODO: Implement smarter techniques for exploration
     #       (Plan2Explore, etc)
-    writer = SummaryWriter()
+    writer = SummaryWriter(comment=cfg.log_message or "")
 
     agent = hydra.utils.instantiate(cfg.agent,
                             obs_space_num=env.observation_space.shape[0],
@@ -72,34 +86,25 @@ def main(cfg: DictConfig):
                  with_stack=True) if cfg.debug.profiler else None
 
     for i in tqdm(range(int(cfg.training.pretrain)), desc='Pretraining'):
+        if cfg.training.checkpoint_path is not None:
+            break
         s, a, r, n, f, first = buff.sample(cfg.training.batch_size,
                                     cluster_size=cfg.agent.get('batch_cluster_size', 1))
         losses = agent.train(s, a, r, n, f, first)
         for loss_name, loss in losses.items():
             writer.add_scalar(f'pre_train/{loss_name}', loss, i)
 
+        # TODO: remove constants
         log_every_n = 25
         st = int(cfg.training.pretrain) // log_every_n
-        # FIXME: extract logging to seperate entity to omit
-        # copy-paste
         if i % log_every_n == 0:
-            rollouts = collect_rollout_num(env, cfg.validation.rollout_num, agent)
-            # TODO: make logs visualization in separate process
-            metrics = metrics_evaluator.calculate_metrics(rollouts)
-            for metric_name, metric in metrics.items():
-                writer.add_scalar(f'val/{metric_name}', metric, -st + i/log_every_n)
+            val_logs(agent, cfg.validation, env, -st + i/log_every_n, writer)
 
-            if cfg.validation.visualize:
-                rollouts = collect_rollout_num(env, 1, agent, collect_obs=True)
+    if cfg.training.checkpoint_path is not None:
+        prev_global_step = global_step = agent.load_ckpt(cfg.training.checkpoint_path)
+    else:
+        prev_global_step = global_step = 0
 
-                for rollout in rollouts:
-                    video = np.expand_dims(rollout.observations.transpose(0, 3, 1, 2), 0)
-                    writer.add_video('val/visualization', video, -st + i/log_every_n, fps=20)
-                    # FIXME: Very bad from architecture point
-                    agent.viz_log(rollout, writer, -st + i/log_every_n)
-
-    global_step = 0
-    prev_global_step = 0
     pbar = tqdm(total=cfg.training.steps, desc='Training')
     while global_step < cfg.training.steps:
         ### Training and exploration
@@ -117,7 +122,6 @@ def main(cfg: DictConfig):
                 losses = agent.train(s, a, r, n, f, first)
                 if cfg.debug.profiler:
                     prof.step()
-                # NOTE: Do not forget to run test with every step to check for outliers
                 if global_step % 10 == 0:
                     for loss_name, loss in losses.items():
                         writer.add_scalar(f'train/{loss_name}', loss, global_step)
@@ -127,22 +131,7 @@ def main(cfg: DictConfig):
         # FIXME: find more appealing solution
         ### Validation
         if (global_step % cfg.training.val_logs_every) < (prev_global_step % cfg.training.val_logs_every):
-            with torch.no_grad():
-                rollouts = collect_rollout_num(env, cfg.validation.rollout_num, agent)
-            # TODO: make logs visualization in separate process
-            metrics = metrics_evaluator.calculate_metrics(rollouts)
-            for metric_name, metric in metrics.items():
-                writer.add_scalar(f'val/{metric_name}', metric, global_step)
-
-            if cfg.validation.visualize:
-                rollouts = collect_rollout_num(env, 1, agent, collect_obs=True)
-
-                for rollout in rollouts:
-                    video = np.expand_dims(rollout.observations.transpose(0, 3, 1, 2), 0)
-                    writer.add_video('val/visualization', video, global_step)
-                    # FIXME: Very bad from architecture point
-                    with torch.no_grad():
-                        agent.viz_log(rollout, writer, global_step)
+            val_logs(agent, cfg.validation, env, global_step, writer)
 
         ### Checkpoint
         if (global_step % cfg.training.save_checkpoint_every) < (prev_global_step % cfg.training.save_checkpoint_every):
