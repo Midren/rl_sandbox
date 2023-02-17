@@ -1,6 +1,7 @@
 import typing as t
 from collections import defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -832,11 +833,21 @@ class DreamerV2(RlAgent):
             {
                 'epoch': epoch_num,
                 'world_model_state_dict': self.world_model.state_dict(),
-                'world_model_optimizer_state_dict':
-                self.world_model_optimizer.state_dict(),
+                'world_model_optimizer_state_dict':self.world_model_optimizer.state_dict(),
                 'actor_state_dict': self.actor.state_dict(),
                 'critic_state_dict': self.critic.state_dict(),
                 'actor_optimizer_state_dict': self.actor_optimizer.state_dict(),
                 'critic_optimizer_state_dict': self.critic_optimizer.state_dict(),
                 'losses': losses
             }, f'dreamerV2-{epoch_num}-{sum(losses.values())}.ckpt')
+
+    def load_ckpt(self, ckpt_path: Path):
+        ckpt = torch.load(ckpt_path)
+        self.world_model.load_state_dict(ckpt['world_model_state_dict'])
+        self.world_model_optimizer.load_state_dict(
+            ckpt['world_model_optimizer_state_dict'])
+        self.actor.load_state_dict(ckpt['actor_state_dict'])
+        self.critic.load_state_dict(ckpt['critic_state_dict'])
+        self.actor_optimizer.load_state_dict(ckpt['actor_optimizer_state_dict'])
+        self.critic_optimizer.load_state_dict(ckpt['critic_optimizer_state_dict'])
+        return ckpt['epoch']

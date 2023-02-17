@@ -1,5 +1,6 @@
 import numpy as np
 from nptyping import Float, NDArray, Shape
+from pathlib import Path
 
 from rl_sandbox.agents.rl_agent import RlAgent
 from rl_sandbox.utils.schedulers import Scheduler
@@ -26,3 +27,6 @@ class ExplorativeAgent(RlAgent):
     def save_ckpt(self, epoch_num: int, losses: dict[str, float]):
         self.policy_ag.save_ckpt(epoch_num, losses)
         self.expl_ag.save_ckpt(epoch_num, losses)
+
+    def load_ckpt(self, ckpt_path: Path):
+        pass

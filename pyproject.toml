@@ -8,6 +8,7 @@ version = "0.1.0"
 description = 'Sandbox for my RL experiments'
 authors = ['Roman Milishchuk <milishchuk.roman@gmail.com>']
 packages = [{include = 'rl_sandbox'}]
+# add config directory as package data
 
 [tool.poetry.dependencies]
 python = "^3.10"
@@ -26,6 +27,7 @@ matplotlib = "^3.0.0"
 webdataset = "^0.2.20"
 jaxtyping = '^0.2.0'
 lovely_tensors = '^0.1.10'
+torchshow = '^0.5.0'
 
 [tool.yapf]
 based_on_style = "pep8"

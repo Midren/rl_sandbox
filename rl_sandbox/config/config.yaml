@@ -8,8 +8,10 @@ defaults:
 
 seed: 42
 device_type: cuda
+log_message: 
 
 training:
+  checkpoint_path: null
   steps: 1e6
   prefill: 1000
   pretrain: 100
