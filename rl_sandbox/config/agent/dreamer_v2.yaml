@@ -16,7 +16,7 @@ imagination_horizon: 15
 actor_lr: 8e-5
 # mixing of reinforce and maximizing value func
 # for dm_control it is zero in Dreamer (Atari 1)
-actor_reinforce_fraction: 0.0
+actor_reinforce_fraction: null
 actor_entropy_scale: 1e-4
 
 critic_lr: 8e-5

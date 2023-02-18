@@ -1,5 +1,6 @@
 import typing as t
 from multiprocessing.synchronize import Lock
+from IPython.core.inputtransformer2 import warnings
 
 import numpy as np
 import torch.multiprocessing as mp
@@ -62,8 +63,12 @@ def iter_rollout(
 
         new_state, reward, terminated = unpack(env.step(action))
 
-        # FIXME: will break for non-DM
-        obs = env.render() if collect_obs else None
+        try:
+            obs = env.render() if collect_obs else None
+        except RuntimeError:
+            # FIXME: hot-fix for Crafter env to work
+            warnings.warn("Cannot render environment, using state instead")
+            obs = state
         # if collect_obs and isinstance(env, dmEnv):
         yield state, prev_action, prev_reward, new_state, prev_terminated, obs
         state = new_state

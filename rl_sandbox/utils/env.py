@@ -3,6 +3,7 @@ from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
 
 import gym
+import crafter
 import numpy as np
 from dm_control import suite
 from dm_env import Environment as dmEnviron
@@ -136,21 +137,41 @@ class GymEnv(Env):
                  repeat_action_num: int, transforms: list[ActionTransformer]):
         super().__init__(run_on_pixels, obs_res, repeat_action_num, transforms)
 
+        self.task_name = task_name
         self.env: gym.Env = gym.make(task_name)
-        self.visualized_env: gym.Env = gym.make(task_name, render_mode='rgb_array_list')
+        if self.task_name.startswith("Crafter"):
+            crafter.Recorder(self.env,
+                            "runs/",
+                            save_stats=True,
+                            save_video=False,
+                            save_episode=False)
 
         if run_on_pixels:
             raise NotImplementedError("Run on pixels supported only for 'dm_control'")
 
-    def _step(self, action: Action) -> EnvStepResult:
-        new_state, reward, terminated, _, _ = self.env.step(action)
-        return EnvStepResult(new_state, reward, terminated)
+    def render(self):
+        raise RuntimeError("Render is not supported for GymEnv")
+
+    def _step(self, action: Action, repeat_num: int) -> EnvStepResult:
+        rew = 0
+        for _ in range(repeat_num - 1):
+            new_state, reward, terminated, _ = self.env.step(action)
+            ts = EnvStepResult(new_state, reward, terminated)
+            if terminated:
+                break
+            rew += reward or 0.0
+        if repeat_num == 1 or not terminated:
+            new_state, reward, terminated, _ = self.env.step(action)
+            env_res = EnvStepResult(new_state, reward, terminated)
+        else:
+            env_res = ts
+        env_res.reward = rew + (env_res.reward or 0.0)
+        return env_res
 
     def reset(self):
-        state, _ = self.env.reset()
+        state = self.env.reset()
         return EnvStepResult(state, 0, False)
 
-    @property
     def _observation_space(self):
         return self.env.observation_space
 

@@ -8,6 +8,7 @@ import random
 import torch
 from torch.profiler import profile, ProfilerActivity
 import lovely_tensors as lt
+from gym.spaces import Discrete
 
 from rl_sandbox.metrics import MetricsEvaluator
 from rl_sandbox.utils.env import Env
@@ -70,13 +71,11 @@ def main(cfg: DictConfig):
     #       (Plan2Explore, etc)
     writer = SummaryWriter(comment=cfg.log_message or "")
 
+    is_discrete = isinstance(env.action_space, Discrete)
     agent = hydra.utils.instantiate(cfg.agent,
-                            obs_space_num=env.observation_space.shape[0],
-                            # FIXME: feels bad
-                            # actions_num=(env.action_space.high - env.action_space.low + 1).item(),
-                            # FIXME: currently only continuous tasks
-                            actions_num=env.action_space.shape[0],
-                            action_type='continuous',
+                            obs_space_num=env.observation_space.shape,
+                            actions_num = env.action_space.n if is_discrete else env.action_space.shape[0],
+                            action_type='discrete' if is_discrete else 'continuous' ,
                             device_type=cfg.device_type,
                             logger=writer)
 
