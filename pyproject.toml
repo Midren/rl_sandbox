@@ -14,7 +14,7 @@ packages = [{include = 'rl_sandbox'}]
 python = "^3.10"
 numpy = '*'
 nptyping = '*'
-gym = "^0.26.1"
+gym = "0.25.0" # crafter requires old step api
 pygame = '*'
 moviepy = '*'
 torchvision = '^0.13'
@@ -28,6 +28,7 @@ webdataset = "^0.2.20"
 jaxtyping = '^0.2.0'
 lovely_tensors = '^0.1.10'
 torchshow = '^0.5.0'
+crafter = '^1.8.0'
 
 [tool.yapf]
 based_on_style = "pep8"

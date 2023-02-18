@@ -1,0 +1,6 @@
+_target_: rl_sandbox.utils.env.GymEnv
+task_name: CrafterReward-v1
+run_on_pixels: false # it is run on pixels by default
+obs_res: [64, 64]
+repeat_action_num: 1
+transforms: []

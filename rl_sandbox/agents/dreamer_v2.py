@@ -67,6 +67,7 @@ class NormalWithOffset(nn.Module):
 class DistLayer(nn.Module):
     def __init__(self, type: str):
         super().__init__()
+        self._dist = type
         match type:
             case 'mse':
                 self.dist = lambda x: td.Normal(x.float(), 1.0)
@@ -93,7 +94,11 @@ class DistLayer(nn.Module):
                 raise RuntimeError("Invalid dist layer")
 
     def forward(self, x):
-        return td.Independent(self.dist(x), 1)
+        match self._dist:
+            case 'onehot':
+                return self.dist(x)
+            case _:
+                return td.Independent(self.dist(x), 1)
 
 def Dist(val):
     return DistLayer('onehot')(val)
@@ -628,9 +633,10 @@ class DreamerV2(RlAgent):
         self.cluster_size = batch_cluster_size
         self.actions_num = actions_num
         self.rho = actor_reinforce_fraction
-        # if actor_reinforce_fraction != 0:
-        #     raise NotImplementedError("Reinforce part is not implemented")
         self.eta = actor_entropy_scale
+        self.is_discrete = (action_type != 'continuous')
+        if self.rho is None:
+            self.rho = self.is_discrete
 
         self.world_model = WorldModel(batch_cluster_size, latent_dim, latent_classes,
                                       rssm_dim, actions_num, kl_loss_scale,
@@ -638,11 +644,11 @@ class DreamerV2(RlAgent):
                                       discrete_rssm).to(device_type)
 
         self.actor = fc_nn_generator(rssm_dim + latent_dim * latent_classes,
-                                     actions_num * 2 if action_type == 'continuous' else actions_num,
+                                     actions_num if self.is_discrete else actions_num * 2,
                                      400,
                                      5,
                                      intermediate_activation=nn.ELU,
-                                     final_activation=DistLayer('normal_trunc' if action_type == 'continuous' else 'onehot')).to(device_type)
+                                     final_activation=DistLayer('onehot' if self.is_discrete else 'normal_trunc')).to(device_type)
 
         self.critic = ImaginativeCritic(discount_factor, critic_update_interval,
                                         critic_soft_update_fraction,
@@ -720,13 +726,13 @@ class DreamerV2(RlAgent):
         actor_dist = self.actor(self._state.combined)
         self._last_action = actor_dist.sample()
 
-        if False:
-            self._action_probs += actor_dist.base_dist.probs.squeeze()
-        self._latent_probs += self._state.stoch_dist.base_dist.probs.squeeze()
+        if self.is_discrete:
+            self._action_probs += actor_dist.probs.squeeze()
+        self._latent_probs += self._state.stoch_dist.probs.squeeze()
         self._stored_steps += 1
 
-        if False:
-            return np.array([self._last_action.squeeze().detach().cpu().numpy().argmax()])
+        if self.is_discrete:
+            return self._last_action.squeeze().detach().cpu().numpy().argmax()
         else:
             return self._last_action.squeeze().detach().cpu().numpy()
 
@@ -734,6 +740,8 @@ class DreamerV2(RlAgent):
         obs = torch.from_numpy(obs.copy()).to(self.device)
         obs = self.preprocess_obs(obs)
         actions = self.from_np(actions)
+        if self.is_discrete:
+            actions = F.one_hot(actions.to(torch.int64), num_classes=self.actions_num).squeeze()
         video = []
         rews = []
 
@@ -780,7 +788,7 @@ class DreamerV2(RlAgent):
         latent_hist = ((latent_hist / latent_hist.max() * 255.0 )).astype(np.uint8)
 
         # if discrete action space
-        if False:
+        if self.is_discrete:
             action_hist = (self._action_probs / self._stored_steps).detach().cpu().numpy()
             fig = plt.Figure()
             ax = fig.add_axes([0, 0, 1, 1])
@@ -807,16 +815,12 @@ class DreamerV2(RlAgent):
 
         obs = self.preprocess_obs(self.from_np(obs))
         a = self.from_np(a)
-        if False:
+        if self.is_discrete:
             a = F.one_hot(a.to(torch.int64), num_classes=self.actions_num).squeeze()
         r = self.from_np(r)
         next_obs = self.preprocess_obs(self.from_np(next_obs))
         discount_factors = (1 - self.from_np(is_finished).type(torch.float32))
         first_flags = self.from_np(is_first).type(torch.float32)
-
-        number_of_zero_discounts = (1 - discount_factors).sum()
-        if number_of_zero_discounts > 0:
-            pass
 
         # take some latent embeddings as initial
         with torch.cuda.amp.autocast(enabled=True):
@@ -880,7 +884,7 @@ class DreamerV2(RlAgent):
             action_dists = self.actor(zs[:-2].detach())
             baseline = self.critic.target_critic(zs[:-2]).mode
             advantage = (vs[1:] - baseline).detach()
-            losses_ac['loss_actor_reinforce'] += 0# -(self.rho * action_dists.base_dist.log_prob(actions[1:-1].detach()).unsqueeze(2) * discount_factors[:-2] * advantage).mean()
+            losses_ac['loss_actor_reinforce'] += -(self.rho * action_dists.log_prob(actions[1:-1].detach()).unsqueeze(2) * discount_factors[:-2] * advantage).mean()
             losses_ac['loss_actor_dynamics_backprop'] = -((1 - self.rho) * (vs[1:]*discount_factors[:-2])).mean()
 
             def calculate_entropy(dist):
