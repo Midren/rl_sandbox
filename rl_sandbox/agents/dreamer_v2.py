@@ -259,12 +259,13 @@ class RSSM(nn.Module):
 
     """
 
-    def __init__(self, latent_dim, hidden_size, actions_num, latent_classes):
+    def __init__(self, latent_dim, hidden_size, actions_num, latent_classes, discrete_rssm):
         super().__init__()
         self.latent_dim = latent_dim
         self.latent_classes = latent_classes
         self.ensemble_num = 1
         self.hidden_size = hidden_size
+        self.discrete_rssm = discrete_rssm
 
         # Calculate deterministic state from prev stochastic, prev action and prev deterministic
         self.pre_determ_recurrent = nn.Sequential(
@@ -291,6 +292,7 @@ class RSSM(nn.Module):
         # FIXME: very bad magic number
         img_sz = 4 * 384  # 384*2x2
         self.stoch_net = nn.Sequential(
+            # nn.LayerNorm(hidden_size + img_sz, hidden_size),
             nn.Linear(hidden_size + img_sz, hidden_size), # Dreamer 'obs_out'
             # nn.LayerNorm(hidden_size),
             nn.ELU(inplace=True),
@@ -299,6 +301,7 @@ class RSSM(nn.Module):
             View((1, -1, latent_dim, self.latent_classes)))
         # self.determ_discretizer = MlpVAE(self.hidden_size)
         self.determ_discretizer = Quantize(16, 16)
+        self.determ_layer_norm = nn.LayerNorm(hidden_size)
 
     def estimate_stochastic_latent(self, prev_determ: torch.Tensor):
         dists_per_model = [model(prev_determ) for model in self.ensemble_prior_estimator]
@@ -314,8 +317,12 @@ class RSSM(nn.Module):
         x = self.pre_determ_recurrent(torch.concat([prev_state.stoch, action], dim=-1))
         # NOTE: x and determ are actually the same value if sequence of 1 is inserted
         x, determ_prior = self.determ_recurrent(x, prev_state.determ)
-        determ_post, diff, embed_ind = self.determ_discretizer(determ_prior)
-        determ_post = determ_post.reshape(determ_prior.shape)
+        if self.discrete_rssm:
+            determ_post, diff, embed_ind = self.determ_discretizer(determ_prior)
+            determ_post = determ_post.reshape(determ_prior.shape)
+            determ_post = self.determ_layer_norm(determ_post)
+        else:
+            determ_post, diff = determ_prior, 0
 
         # used for KL divergence
         predicted_stoch_logits = self.estimate_stochastic_latent(x)
@@ -409,7 +416,7 @@ class Normalizer(nn.Module):
 class WorldModel(nn.Module):
 
     def __init__(self, batch_cluster_size, latent_dim, latent_classes, rssm_dim,
-                 actions_num, kl_loss_scale, kl_loss_balancing, kl_free_nats):
+                 actions_num, kl_loss_scale, kl_loss_balancing, kl_free_nats, discrete_rssm):
         super().__init__()
         self.kl_free_nats = kl_free_nats
         self.kl_beta = kl_loss_scale
@@ -424,7 +431,8 @@ class WorldModel(nn.Module):
         self.recurrent_model = RSSM(latent_dim,
                                     rssm_dim,
                                     actions_num,
-                                    latent_classes=latent_classes)
+                                    latent_classes,
+                                    discrete_rssm)
         self.encoder = Encoder()
         self.image_predictor = Decoder(rssm_dim + latent_dim * latent_classes)
         self.reward_predictor = fc_nn_generator(rssm_dim + latent_dim * latent_classes,
@@ -610,6 +618,7 @@ class DreamerV2(RlAgent):
             world_model_lr: float,
             actor_lr: float,
             critic_lr: float,
+            discrete_rssm: bool,
             device_type: str = 'cpu',
             logger = None):
 
@@ -625,7 +634,8 @@ class DreamerV2(RlAgent):
 
         self.world_model = WorldModel(batch_cluster_size, latent_dim, latent_classes,
                                       rssm_dim, actions_num, kl_loss_scale,
-                                      kl_loss_balancing, kl_loss_free_nats).to(device_type)
+                                      kl_loss_balancing, kl_loss_free_nats,
+                                      discrete_rssm).to(device_type)
 
         self.actor = fc_nn_generator(rssm_dim + latent_dim * latent_classes,
                                      actions_num * 2 if action_type == 'continuous' else actions_num,

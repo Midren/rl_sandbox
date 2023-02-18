@@ -25,3 +25,5 @@ critic_value_target_lambda: 0.95
 critic_update_interval: 100
 # [0-1], 1 means hard update
 critic_soft_update_fraction: 1
+
+discrete_rssm: true
