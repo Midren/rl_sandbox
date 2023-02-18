@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import torch.distributions as td
 from torch import nn
-from torch.nn import functional as F
+from torch.nn import ELU, functional as F
 from jaxtyping import Float, Bool
 
 from rl_sandbox.agents.rl_agent import RlAgent
@@ -157,6 +157,85 @@ class GRUCell(nn.Module):
     output = update * cand + (1 - update) * state
     return output, output
 
+
+class Quantize(nn.Module):
+    def __init__(self, dim, n_embed, decay=0.99, eps=1e-5):
+        super().__init__()
+
+        self.dim = dim
+        self.n_embed = n_embed
+        self.decay = decay
+        self.eps = eps
+
+        embed = torch.randn(dim, n_embed)
+        self.register_buffer("embed", embed)
+        self.register_buffer("cluster_size", torch.zeros(n_embed))
+        self.register_buffer("embed_avg", embed.clone())
+
+    def forward(self, input):
+        input = input.reshape(-1, 1, self.n_embed, self.dim)
+        flatten = input.reshape(-1, self.dim)
+        dist = (
+            flatten.pow(2).sum(1, keepdim=True)
+            - 2 * flatten @ self.embed
+            + self.embed.pow(2).sum(0, keepdim=True)
+        )
+        _, embed_ind = (-dist).max(1)
+        embed_onehot = F.one_hot(embed_ind, self.n_embed).type(flatten.dtype)
+        embed_ind = embed_ind.view(*input.shape[:-1])
+        quantize = self.embed_code(embed_ind)
+
+        if self.training:
+            embed_onehot_sum = embed_onehot.sum(0)
+            embed_sum = flatten.transpose(0, 1) @ embed_onehot
+
+            # dist_fn.all_reduce(embed_onehot_sum)
+            # dist_fn.all_reduce(embed_sum)
+
+            self.cluster_size.data.mul_(self.decay).add_(
+                embed_onehot_sum, alpha=1 - self.decay
+            )
+            self.embed_avg.data.mul_(self.decay).add_(embed_sum, alpha=1 - self.decay)
+            n = self.cluster_size.sum()
+            cluster_size = (
+                (self.cluster_size + self.eps) / (n + self.n_embed * self.eps) * n
+            )
+            embed_normalized = self.embed_avg / cluster_size.unsqueeze(0)
+            self.embed.data.copy_(embed_normalized)
+
+        diff = (quantize.detach() - input).pow(2).mean()
+        quantize = input + (quantize - input).detach()
+
+        return quantize, diff, embed_ind
+
+    def embed_code(self, embed_id):
+        return F.embedding(embed_id, self.embed.transpose(0, 1))
+
+
+# class MlpVAE(nn.Module):
+#     def __init__(self, input_size, latent_size=(8, 8)):
+#         self.encoder = fc_nn_generator(input_size,
+#                                        np.prod(latent_size),
+#                                        hidden_size=np.prod(latent_size),
+#                                        num_layers=2,
+#                                        intermediate_activation=nn.ELU,
+#                                        final_activation=nn.Sequential(
+#                                            View((-1,) + latent_size),
+#                                            DistLayer('onehot')
+#                                         ))
+#         self.decoder = fc_nn_generator(np.prod(latent_size),
+#                                        input_size,
+#                                        hidden_size=np.prod(latent_size),
+#                                        num_layers=2,
+#                                        intermediate_activation=nn.ELU,
+#                                        final_activation=nn.Identity())
+
+#     def forward(self, x):
+#         z = self.encoder(x)
+#         x_hat = self.decoder(z.rsample())
+#         return z, x_hat
+
+
 class RSSM(nn.Module):
     """
     Recurrent State Space Model
@@ -218,6 +297,8 @@ class RSSM(nn.Module):
             nn.Linear(hidden_size,
                       latent_dim * self.latent_classes),  # Dreamer 'obs_dist'
             View((1, -1, latent_dim, self.latent_classes)))
+        # self.determ_discretizer = MlpVAE(self.hidden_size)
+        self.determ_discretizer = Quantize(16, 16)
 
     def estimate_stochastic_latent(self, prev_determ: torch.Tensor):
         dists_per_model = [model(prev_determ) for model in self.ensemble_prior_estimator]
@@ -232,11 +313,13 @@ class RSSM(nn.Module):
                      action) -> State:
         x = self.pre_determ_recurrent(torch.concat([prev_state.stoch, action], dim=-1))
         # NOTE: x and determ are actually the same value if sequence of 1 is inserted
-        x, determ = self.determ_recurrent(x, prev_state.determ)
+        x, determ_prior = self.determ_recurrent(x, prev_state.determ)
+        determ_post, diff, embed_ind = self.determ_discretizer(determ_prior)
+        determ_post = determ_post.reshape(determ_prior.shape)
 
         # used for KL divergence
         predicted_stoch_logits = self.estimate_stochastic_latent(x)
-        return State(determ, predicted_stoch_logits)
+        return State(determ_post, predicted_stoch_logits), diff
 
     def update_current(self, prior: State, embed) -> State: # Dreamer 'obs_out'
         return State(prior.determ, self.stoch_net(torch.concat([prior.determ, embed], dim=-1)))
@@ -249,10 +332,10 @@ class RSSM(nn.Module):
             'a' <- action taken on prev step
             Returns 'h_next' <- the next next of the world
         """
-        prior = self.predict_next(h_prev, action)
+        prior, diff = self.predict_next(h_prev, action)
         posterior = self.update_current(prior, embed)
 
-        return prior, posterior
+        return prior, posterior, diff
 
 
 class Encoder(nn.Module):
@@ -365,7 +448,7 @@ class WorldModel(nn.Module):
                             torch.zeros(seq_size, batch_size, self.latent_classes * self.latent_dim, device=device))
 
     def predict_next(self, prev_state: State, action):
-        prior = self.recurrent_model.predict_next(prev_state, action)
+        prior, _ = self.recurrent_model.predict_next(prev_state, action)
 
         reward = self.reward_predictor(prior.combined).mode
         discount_factors = self.discount_predictor(prior.combined).sample()
@@ -375,7 +458,7 @@ class WorldModel(nn.Module):
         if state is None:
             state = self.get_initial_state()
         embed = self.encoder(obs.unsqueeze(0))
-        _, posterior = self.recurrent_model.forward(state, embed.unsqueeze(0),
+        _, posterior, _ = self.recurrent_model.forward(state, embed.unsqueeze(0),
                                                            action)
         return posterior
 
@@ -415,11 +498,13 @@ class WorldModel(nn.Module):
             embed_t, a_t, first_t = embed_c[:, t].unsqueeze(0), a_c[:, t].unsqueeze(0), first_c[:, t].unsqueeze(0)
             a_t = a_t * (1 - first_t)
 
-            prior, posterior = self.recurrent_model.forward(prev_state, embed_t, a_t)
+            prior, posterior, diff = self.recurrent_model.forward(prev_state, embed_t, a_t)
             prev_state = posterior
 
             priors.append(prior)
             posteriors.append(posterior)
+
+            losses['loss_determ_recons'] += diff
 
         posterior = State.stack(posteriors)
         prior = State.stack(priors)
