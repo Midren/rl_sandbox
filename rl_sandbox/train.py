@@ -124,6 +124,9 @@ def main(cfg: DictConfig):
                 if global_step % 10 == 0:
                     for loss_name, loss in losses.items():
                         writer.add_scalar(f'train/{loss_name}', loss, global_step)
+                    for tag, value in agent.world_model.named_parameters():
+                        tag = tag.replace('.', '/')
+                        writer.add_histogram(f'train/grad/{tag}', value.grad.data.cpu().numpy(), global_step)
             global_step += cfg.env.repeat_action_num
             pbar.update(cfg.env.repeat_action_num)
 
