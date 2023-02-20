@@ -1,24 +1,22 @@
 defaults:
-  - agent/dreamer_v2
-  #- env/dm_walker
-  - env/dm_cartpole
-  #- env/dm_quadruped
-  #- env/dm_cheetah
+  - agent: dreamer_v2_crafter
+  - env: crafter
   - _self_
 
 seed: 42
 device_type: cuda
-log_message: 
+log_message: Activated Discrete RSSM
 
 training:
   checkpoint_path: null
   steps: 1e6
-  prefill: 1000
-  pretrain: 100
+  prefill: 10000
+  pretrain: 1
   batch_size: 800
+  prioritize_ends: true
   gradient_steps_per_step: 5
-  save_checkpoint_every: 1e5
-  val_logs_every: 2.5e3
+  save_checkpoint_every: 3e5
+  val_logs_every: 5e3
 
 validation:
   rollout_num: 5

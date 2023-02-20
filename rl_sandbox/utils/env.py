@@ -3,7 +3,6 @@ from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
 
 import gym
-import crafter
 import numpy as np
 from dm_control import suite
 from dm_env import Environment as dmEnviron
@@ -139,12 +138,6 @@ class GymEnv(Env):
 
         self.task_name = task_name
         self.env: gym.Env = gym.make(task_name)
-        if self.task_name.startswith("Crafter"):
-            crafter.Recorder(self.env,
-                            "runs/",
-                            save_stats=True,
-                            save_video=False,
-                            save_episode=False)
 
         if run_on_pixels:
             raise NotImplementedError("Run on pixels supported only for 'dm_control'")
@@ -165,7 +158,8 @@ class GymEnv(Env):
             env_res = EnvStepResult(new_state, reward, terminated)
         else:
             env_res = ts
-        env_res.reward = rew + (env_res.reward or 0.0)
+        # FIXME: move to config the option
+        env_res.reward = np.tanh(rew + (env_res.reward or 0.0))
         return env_res
 
     def reset(self):

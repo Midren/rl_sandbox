@@ -276,7 +276,7 @@ class RSSM(nn.Module):
         self.pre_determ_recurrent = nn.Sequential(
             nn.Linear(latent_dim * latent_classes + actions_num,
                       hidden_size),  # Dreamer 'img_in'
-            # nn.LayerNorm(hidden_size),
+            nn.LayerNorm(hidden_size),
             nn.ELU(inplace=True)
         )
         self.determ_recurrent = GRUCell(input_size=hidden_size, hidden_size=hidden_size, norm=True)  # Dreamer gru '_cell'
@@ -286,7 +286,7 @@ class RSSM(nn.Module):
         self.ensemble_prior_estimator = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(hidden_size, hidden_size),  # Dreamer 'img_out_{k}'
-                # nn.LayerNorm(hidden_size),
+                nn.LayerNorm(hidden_size),
                 nn.ELU(inplace=True),
                 nn.Linear(hidden_size,
                           latent_dim * self.latent_classes),  # Dreamer 'img_dist_{k}'
@@ -299,13 +299,13 @@ class RSSM(nn.Module):
         self.stoch_net = nn.Sequential(
             # nn.LayerNorm(hidden_size + img_sz, hidden_size),
             nn.Linear(hidden_size + img_sz, hidden_size), # Dreamer 'obs_out'
-            # nn.LayerNorm(hidden_size),
+            nn.LayerNorm(hidden_size),
             nn.ELU(inplace=True),
             nn.Linear(hidden_size,
                       latent_dim * self.latent_classes),  # Dreamer 'obs_dist'
             View((1, -1, latent_dim, self.latent_classes)))
         # self.determ_discretizer = MlpVAE(self.hidden_size)
-        self.determ_discretizer = Quantize(16, 16)
+        self.determ_discretizer = Quantize(32, 32)
         self.determ_layer_norm = nn.LayerNorm(hidden_size)
 
     def estimate_stochastic_latent(self, prev_determ: torch.Tensor):
@@ -361,7 +361,7 @@ class Encoder(nn.Module):
         for i, k in enumerate(kernel_sizes):
             out_channels = 2**i * channel_step
             layers.append(nn.Conv2d(in_channels, out_channels, kernel_size=k, stride=2))
-            # layers.append(nn.BatchNorm2d(out_channels))
+            layers.append(nn.GroupNorm(1, out_channels))
             layers.append(nn.ELU(inplace=True))
             in_channels = out_channels
         layers.append(nn.Flatten())
@@ -387,7 +387,7 @@ class Decoder(nn.Module):
                 out_channels = 3
                 layers.append(nn.ConvTranspose2d(in_channels, 3, kernel_size=k, stride=2))
             else:
-                # layers.append(nn.BatchNorm2d(in_channels))
+                layers.append(nn.GroupNorm(1, in_channels))
                 layers.append(
                     nn.ConvTranspose2d(in_channels, out_channels, kernel_size=k,
                                        stride=2))
@@ -421,7 +421,8 @@ class Normalizer(nn.Module):
 class WorldModel(nn.Module):
 
     def __init__(self, batch_cluster_size, latent_dim, latent_classes, rssm_dim,
-                 actions_num, kl_loss_scale, kl_loss_balancing, kl_free_nats, discrete_rssm):
+                 actions_num, kl_loss_scale, kl_loss_balancing, kl_free_nats, discrete_rssm,
+                 predict_discount):
         super().__init__()
         self.kl_free_nats = kl_free_nats
         self.kl_beta = kl_loss_scale
@@ -432,6 +433,7 @@ class WorldModel(nn.Module):
         self.actions_num = actions_num
         # kl loss balancing (prior/posterior)
         self.alpha = kl_loss_balancing
+        self.predict_discount = predict_discount
 
         self.recurrent_model = RSSM(latent_dim,
                                     rssm_dim,
@@ -464,7 +466,10 @@ class WorldModel(nn.Module):
         prior, _ = self.recurrent_model.predict_next(prev_state, action)
 
         reward = self.reward_predictor(prior.combined).mode
-        discount_factors = self.discount_predictor(prior.combined).sample()
+        if self.predict_discount:
+            discount_factors = self.discount_predictor(prior.combined).sample()
+        else:
+            discount_factors = torch.ones_like(reward)
         return prior, reward, discount_factors
 
     def get_latent(self, obs: torch.Tensor, action, state: t.Optional[State]) -> State:
@@ -621,6 +626,7 @@ class DreamerV2(RlAgent):
             critic_soft_update_fraction: float,
             critic_value_target_lambda: float,
             world_model_lr: float,
+            world_model_predict_discount: bool,
             actor_lr: float,
             critic_lr: float,
             discrete_rssm: bool,
@@ -641,7 +647,8 @@ class DreamerV2(RlAgent):
         self.world_model = WorldModel(batch_cluster_size, latent_dim, latent_classes,
                                       rssm_dim, actions_num, kl_loss_scale,
                                       kl_loss_balancing, kl_loss_free_nats,
-                                      discrete_rssm).to(device_type)
+                                      discrete_rssm,
+                                      world_model_predict_discount).to(device_type)
 
         self.actor = fc_nn_generator(rssm_dim + latent_dim * latent_classes,
                                      actions_num if self.is_discrete else actions_num * 2,
@@ -841,6 +848,8 @@ class DreamerV2(RlAgent):
 
         # FIXME: clip gradient should be parametrized
         self.scaler.unscale_(self.world_model_optimizer)
+        for tag, value in self.world_model.named_parameters():
+            wm_metrics[f"grad/{tag.replace('.', '/')}"] = value.detach()
         nn.utils.clip_grad_norm_(self.world_model.parameters(), 100)
         self.scaler.step(self.world_model_optimizer)
 
@@ -858,10 +867,6 @@ class DreamerV2(RlAgent):
             states, actions, rewards, discount_factors = self.imagine_trajectory(initial_states)
             zs = states.combined
             rewards = self.world_model.reward_normalizer(rewards)
-
-            # Discount prediction is disabled for dmc vision in Dreamer
-            # as trajectory will not abruptly stop
-            discount_factors = self.critic.gamma * torch.ones_like(rewards)
 
             # Discounted factors should be shifted as they predict whether next state cannot be used
             # First discount factor on contrary is always 1 as it cannot lead to trajectory finish
@@ -921,9 +926,9 @@ class DreamerV2(RlAgent):
         self.critic.update_target()
         self.scaler.update()
 
-        losses = {l: val.detach().cpu().item() for l, val in losses.items()}
-        losses_ac = {l: val.detach().cpu().item() for l, val in losses_ac.items()}
-        metrics = {l: val.detach().cpu().item() for l, val in metrics.items()}
+        losses = {l: val.detach().cpu().numpy() for l, val in losses.items()}
+        losses_ac = {l: val.detach().cpu().numpy() for l, val in losses_ac.items()}
+        metrics = {l: val.detach().cpu().numpy() for l, val in metrics.items()}
 
         return losses | losses_ac | metrics
 

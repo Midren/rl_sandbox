@@ -3,28 +3,27 @@ _target_: rl_sandbox.agents.DreamerV2
 batch_cluster_size: 50
 latent_dim: 32
 latent_classes: 32
-rssm_dim: 256
+rssm_dim: 1024
 kl_loss_scale: 1.0
 kl_loss_balancing: 0.8
-kl_loss_free_nats: 1.0
-world_model_lr: 3e-4
-world_model_predict_discount: false
+kl_loss_free_nats: 0.0
+world_model_lr: 1e-4
+world_model_predict_discount: true
 
 # ActorCritic parameters
 discount_factor: 0.999
 imagination_horizon: 15
 
-actor_lr: 8e-5
-# mixing of reinforce and maximizing value func
-# for dm_control it is zero in Dreamer (Atari 1)
+actor_lr: 1e-4
+# automatically chooses depending on discrete/continuous env
 actor_reinforce_fraction: null
-actor_entropy_scale: 1e-4
+actor_entropy_scale: 3e-3
 
-critic_lr: 8e-5
+critic_lr: 1e-4
 # Lambda parameter for trainin deeper multi-step prediction
 critic_value_target_lambda: 0.95
 critic_update_interval: 100
 # [0-1], 1 means hard update
 critic_soft_update_fraction: 1
 
-discrete_rssm: false
+discrete_rssm: true

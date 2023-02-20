@@ -9,6 +9,7 @@ import torch
 from torch.profiler import profile, ProfilerActivity
 import lovely_tensors as lt
 from gym.spaces import Discrete
+import crafter
 
 from rl_sandbox.metrics import MetricsEvaluator
 from rl_sandbox.utils.env import Env
@@ -62,14 +63,23 @@ def main(cfg: DictConfig):
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
 
-    env: Env = hydra.utils.instantiate(cfg.env)
-
-    buff = ReplayBuffer()
-    fillup_replay_buffer(env, buff, max(cfg.training.prefill, cfg.training.batch_size))
-
     # TODO: Implement smarter techniques for exploration
     #       (Plan2Explore, etc)
     writer = SummaryWriter(comment=cfg.log_message or "")
+
+    env: Env = hydra.utils.instantiate(cfg.env)
+    val_env: Env = hydra.utils.instantiate(cfg.env)
+    # TOOD: Create maybe some additional validation env
+    if cfg.env.task_name.startswith("Crafter"):
+        val_env.env = crafter.Recorder(val_env.env,
+                    writer.log_dir,
+                    save_stats=True,
+                    save_video=False,
+                    save_episode=False)
+
+    buff = ReplayBuffer(prioritize_ends=cfg.training.prioritize_ends,
+                        min_ep_len=cfg.agent.get('batch_cluster_size', 1)*(cfg.training.prioritize_ends + 1))
+    fillup_replay_buffer(env, buff, max(cfg.training.prefill, cfg.training.batch_size))
 
     is_discrete = isinstance(env.action_space, Discrete)
     agent = hydra.utils.instantiate(cfg.agent,
@@ -91,13 +101,16 @@ def main(cfg: DictConfig):
                                     cluster_size=cfg.agent.get('batch_cluster_size', 1))
         losses = agent.train(s, a, r, n, f, first)
         for loss_name, loss in losses.items():
-            writer.add_scalar(f'pre_train/{loss_name}', loss, i)
+            if 'grad' in loss_name:
+                writer.add_histogram(f'pre_train/{loss_name}', loss, i)
+            else:
+                writer.add_scalar(f'pre_train/{loss_name}', loss.item(), i)
 
         # TODO: remove constants
         log_every_n = 25
         st = int(cfg.training.pretrain) // log_every_n
         if i % log_every_n == 0:
-            val_logs(agent, cfg.validation, env, -st + i/log_every_n, writer)
+            val_logs(agent, cfg.validation, val_env, -st + i/log_every_n, writer)
 
     if cfg.training.checkpoint_path is not None:
         prev_global_step = global_step = agent.load_ckpt(cfg.training.checkpoint_path)
@@ -121,19 +134,19 @@ def main(cfg: DictConfig):
                 losses = agent.train(s, a, r, n, f, first)
                 if cfg.debug.profiler:
                     prof.step()
-                if global_step % 10 == 0:
+                if global_step % 100 == 0:
                     for loss_name, loss in losses.items():
-                        writer.add_scalar(f'train/{loss_name}', loss, global_step)
-                    for tag, value in agent.world_model.named_parameters():
-                        tag = tag.replace('.', '/')
-                        writer.add_histogram(f'train/grad/{tag}', value.grad.data.cpu().numpy(), global_step)
+                        if 'grad' in loss_name:
+                            writer.add_histogram(f'train/{loss_name}', loss, global_step)
+                        else:
+                            writer.add_scalar(f'train/{loss_name}', loss.item(), global_step)
             global_step += cfg.env.repeat_action_num
             pbar.update(cfg.env.repeat_action_num)
 
         # FIXME: find more appealing solution
         ### Validation
         if (global_step % cfg.training.val_logs_every) < (prev_global_step % cfg.training.val_logs_every):
-            val_logs(agent, cfg.validation, env, global_step, writer)
+            val_logs(agent, cfg.validation, val_env, global_step, writer)
 
         ### Checkpoint
         if (global_step % cfg.training.save_checkpoint_every) < (prev_global_step % cfg.training.save_checkpoint_every):
