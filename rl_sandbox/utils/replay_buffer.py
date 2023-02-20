@@ -32,10 +32,12 @@ class Rollout:
 # TODO: make buffer concurrent-friendly
 class ReplayBuffer:
 
-    def __init__(self, max_len=2e6):
+    def __init__(self, max_len=2e6, prioritize_ends: bool = False, min_ep_len: int = 1):
         self.rollouts: deque[Rollout] = deque()
         self.rollouts_len: deque[int] = deque()
         self.curr_rollout = None
+        self.min_ep_len = min_ep_len
+        self.prioritize_ends = prioritize_ends
         self.max_len = max_len
         self.total_num = 0
 
@@ -43,6 +45,8 @@ class ReplayBuffer:
         return self.total_num
 
     def add_rollout(self, rollout: Rollout):
+        if len(rollout.next_states) <= self.min_ep_len:
+            return
         # NOTE: only last next state is stored, all others are induced
         #       from state on next step
         rollout.next_states = np.expand_dims(rollout.next_states[-1], 0)
@@ -86,7 +90,7 @@ class ReplayBuffer:
         seq_num = batch_size // cluster_size
         # NOTE: constant creation of numpy arrays from self.rollout_len seems terrible for me
         s, a, r, n, t, is_first = [], [], [], [], [], []
-        do_add_curr = self.curr_rollout is not None and len(self.curr_rollout.states) > cluster_size
+        do_add_curr = self.curr_rollout is not None and len(self.curr_rollout.states) > (cluster_size * (self.prioritize_ends + 1))
         tot = self.total_num + (len(self.curr_rollout.states) if do_add_curr else 0)
         r_indeces = np.random.choice(len(self.rollouts) + int(do_add_curr),
                                      seq_num,
@@ -99,9 +103,12 @@ class ReplayBuffer:
                 # -1 because we don't have next_state on terminal
                 rollout, r_len = self.curr_rollout, len(self.curr_rollout.states) - 1
 
-            # NOTE: maybe just not add such small rollouts to buffer
             assert r_len > cluster_size - 1, "Rollout it too small"
-            s_idx = np.random.choice(r_len - cluster_size + 1, 1).item()
+            max_idx = r_len - cluster_size + 1
+            if self.prioritize_ends:
+                s_idx = np.random.choice(max_idx - cluster_size + 1, 1).item() + cluster_size - 1
+            else:
+                s_idx = np.random.choice(max_idx, 1).item()
             s_indeces.append(s_idx)
 
             if r_idx == len(self.rollouts):
