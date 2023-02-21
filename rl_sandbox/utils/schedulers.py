@@ -13,9 +13,13 @@ class LinearScheduler(Scheduler):
         self._dur = duration - 1
         self._curr_t = 0
 
-    def step(self) -> float:
+    @property
+    def val(self) -> float:
         if self._curr_t >= self._dur:
             return self._final
-        val = np.interp([self._curr_t], [0, self._dur], [self._init, self._final])
+        return np.interp([self._curr_t], [0, self._dur], [self._init, self._final]).item()
+
+    def step(self) -> float:
+        val = self.val
         self._curr_t += 1
         return val

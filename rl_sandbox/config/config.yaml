@@ -5,7 +5,7 @@ defaults:
 
 seed: 42
 device_type: cuda
-log_message: Activated Discrete RSSM
+log_message: Added scheduler for discretizer
 
 training:
   checkpoint_path: null
