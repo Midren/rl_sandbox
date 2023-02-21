@@ -17,6 +17,7 @@ from rl_sandbox.utils.replay_buffer import (Action, Actions, Observation,
                                             Observations, Rewards,
                                             TerminationFlags, IsFirstFlags)
 from rl_sandbox.utils.dists import TruncatedNormal
+from rl_sandbox.utils.schedulers import LinearScheduler
 
 class View(nn.Module):
 
@@ -306,6 +307,7 @@ class RSSM(nn.Module):
             View((1, -1, latent_dim, self.latent_classes)))
         # self.determ_discretizer = MlpVAE(self.hidden_size)
         self.determ_discretizer = Quantize(32, 32)
+        self.discretizer_scheduler = LinearScheduler(1.0, 0.0, 1_000_000)
         self.determ_layer_norm = nn.LayerNorm(hidden_size)
 
     def estimate_stochastic_latent(self, prev_determ: torch.Tensor):
@@ -326,6 +328,8 @@ class RSSM(nn.Module):
             determ_post, diff, embed_ind = self.determ_discretizer(determ_prior)
             determ_post = determ_post.reshape(determ_prior.shape)
             determ_post = self.determ_layer_norm(determ_post)
+            alpha = self.discretizer_scheduler.val
+            determ_post = alpha * determ_prior + (1-alpha) * determ_post
         else:
             determ_post, diff = determ_prior, 0
 
@@ -833,6 +837,7 @@ class DreamerV2(RlAgent):
         with torch.cuda.amp.autocast(enabled=True):
             losses, discovered_states, wm_metrics = self.world_model.calculate_loss(
                     obs, a, r, discount_factors, first_flags)
+            self.world_model.recurrent_model.discretizer_scheduler.step()
 
             # NOTE: 'aten::nonzero' inside KL divergence is not currently supported on M1 Pro MPS device
             world_model_loss = torch.Tensor(0).to(self.device)
