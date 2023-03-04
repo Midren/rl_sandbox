@@ -27,4 +27,4 @@ critic_update_interval: 100
 # [0-1], 1 means hard update
 critic_soft_update_fraction: 1
 
-discrete_rssm: false
+discrete_rssm: true
