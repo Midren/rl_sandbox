@@ -1,21 +1,21 @@
 defaults:
-  - agent: dreamer_v2_crafter
-  - env: crafter
+  - agent: dreamer_v2
+  - env: dm_quadruped
   - _self_
 
 seed: 42
 device_type: cuda
-log_message: Added scheduler for discretizer
+log_message: Quadruped with rssm
 
 training:
   checkpoint_path: null
   steps: 1e6
   prefill: 10000
-  pretrain: 1
   batch_size: 800
-  prioritize_ends: true
+  pretrain: 100
+  prioritize_ends: false
   gradient_steps_per_step: 5
-  save_checkpoint_every: 3e5
+  save_checkpoint_every: 1e6
   val_logs_every: 5e3
 
 validation:

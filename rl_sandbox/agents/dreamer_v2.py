@@ -174,12 +174,16 @@ class Quantize(nn.Module):
         self.eps = eps
 
         embed = torch.randn(dim, n_embed)
+        self.inp_in = nn.Linear(1024, self.n_embed*self.dim)
+        self.inp_out = nn.Linear(self.n_embed*self.dim, 1024)
         self.register_buffer("embed", embed)
         self.register_buffer("cluster_size", torch.zeros(n_embed))
         self.register_buffer("embed_avg", embed.clone())
 
-    def forward(self, input):
-        input = input.reshape(-1, 1, self.n_embed, self.dim)
+    def forward(self, inp):
+        # input = self.inp_in(inp).reshape(-1, 1, self.n_embed, self.dim)
+        input = inp.reshape(-1, 1, self.n_embed, self.dim)
+        inp = input
         flatten = input.reshape(-1, self.dim)
         dist = (
             flatten.pow(2).sum(1, keepdim=True)
@@ -195,9 +199,6 @@ class Quantize(nn.Module):
             embed_onehot_sum = embed_onehot.sum(0)
             embed_sum = flatten.transpose(0, 1) @ embed_onehot
 
-            # dist_fn.all_reduce(embed_onehot_sum)
-            # dist_fn.all_reduce(embed_sum)
-
             self.cluster_size.data.mul_(self.decay).add_(
                 embed_onehot_sum, alpha=1 - self.decay
             )
@@ -209,8 +210,10 @@ class Quantize(nn.Module):
             embed_normalized = self.embed_avg / cluster_size.unsqueeze(0)
             self.embed.data.copy_(embed_normalized)
 
-        diff = (quantize.detach() - input).pow(2).mean()
-        quantize = input + (quantize - input).detach()
+        # quantize_out = self.inp_out(quantize.reshape(-1, self.n_embed*self.dim))
+        quantize_out = quantize
+        diff = 0.25*(quantize_out.detach() - inp).pow(2).mean() + (quantize_out - inp.detach()).pow(2).mean()
+        quantize = inp + (quantize_out - inp).detach()
 
         return quantize, diff, embed_ind
 
@@ -306,7 +309,7 @@ class RSSM(nn.Module):
                       latent_dim * self.latent_classes),  # Dreamer 'obs_dist'
             View((1, -1, latent_dim, self.latent_classes)))
         # self.determ_discretizer = MlpVAE(self.hidden_size)
-        self.determ_discretizer = Quantize(32, 32)
+        self.determ_discretizer = Quantize(16, 16)
         self.discretizer_scheduler = LinearScheduler(1.0, 0.0, 1_000_000)
         self.determ_layer_norm = nn.LayerNorm(hidden_size)
 
@@ -924,6 +927,9 @@ class DreamerV2(RlAgent):
         self.scaler.unscale_(self.critic_optimizer)
         nn.utils.clip_grad_norm_(self.actor.parameters(), 100)
         nn.utils.clip_grad_norm_(self.critic.parameters(), 100)
+
+        for tag, value in self.actor.named_parameters():
+            wm_metrics[f"grad/{tag.replace('.', '/')}"] = value.detach()
 
         self.scaler.step(self.actor_optimizer)
         self.scaler.step(self.critic_optimizer)
