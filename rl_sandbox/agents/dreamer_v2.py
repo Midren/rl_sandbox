@@ -2,13 +2,14 @@ import typing as t
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from functools import partial
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.distributions as td
 from torch import nn
-from torch.nn import ELU, functional as F
+from torch.nn import functional as F
 from jaxtyping import Float, Bool
 
 from rl_sandbox.agents.rl_agent import RlAgent
@@ -268,7 +269,7 @@ class RSSM(nn.Module):
 
     """
 
-    def __init__(self, latent_dim, hidden_size, actions_num, latent_classes, discrete_rssm):
+    def __init__(self, latent_dim, hidden_size, actions_num, latent_classes, discrete_rssm, norm_layer: nn.LayerNorm | nn.Identity):
         super().__init__()
         self.latent_dim = latent_dim
         self.latent_classes = latent_classes
@@ -280,7 +281,7 @@ class RSSM(nn.Module):
         self.pre_determ_recurrent = nn.Sequential(
             nn.Linear(latent_dim * latent_classes + actions_num,
                       hidden_size),  # Dreamer 'img_in'
-            nn.LayerNorm(hidden_size),
+            norm_layer(hidden_size),
             nn.ELU(inplace=True)
         )
         self.determ_recurrent = GRUCell(input_size=hidden_size, hidden_size=hidden_size, norm=True)  # Dreamer gru '_cell'
@@ -290,7 +291,7 @@ class RSSM(nn.Module):
         self.ensemble_prior_estimator = nn.ModuleList([
             nn.Sequential(
                 nn.Linear(hidden_size, hidden_size),  # Dreamer 'img_out_{k}'
-                nn.LayerNorm(hidden_size),
+                norm_layer(hidden_size),
                 nn.ELU(inplace=True),
                 nn.Linear(hidden_size,
                           latent_dim * self.latent_classes),  # Dreamer 'img_dist_{k}'
@@ -303,7 +304,7 @@ class RSSM(nn.Module):
         self.stoch_net = nn.Sequential(
             # nn.LayerNorm(hidden_size + img_sz, hidden_size),
             nn.Linear(hidden_size + img_sz, hidden_size), # Dreamer 'obs_out'
-            nn.LayerNorm(hidden_size),
+            norm_layer(hidden_size),
             nn.ELU(inplace=True),
             nn.Linear(hidden_size,
                       latent_dim * self.latent_classes),  # Dreamer 'obs_dist'
@@ -359,7 +360,7 @@ class RSSM(nn.Module):
 
 class Encoder(nn.Module):
 
-    def __init__(self, kernel_sizes=[4, 4, 4, 4]):
+    def __init__(self, norm_layer: nn.GroupNorm | nn.Identity, kernel_sizes=[4, 4, 4, 4]):
         super().__init__()
         layers = []
 
@@ -368,7 +369,7 @@ class Encoder(nn.Module):
         for i, k in enumerate(kernel_sizes):
             out_channels = 2**i * channel_step
             layers.append(nn.Conv2d(in_channels, out_channels, kernel_size=k, stride=2))
-            layers.append(nn.GroupNorm(1, out_channels))
+            layers.append(norm_layer(1, out_channels))
             layers.append(nn.ELU(inplace=True))
             in_channels = out_channels
         layers.append(nn.Flatten())
@@ -380,7 +381,7 @@ class Encoder(nn.Module):
 
 class Decoder(nn.Module):
 
-    def __init__(self, input_size, kernel_sizes=[5, 5, 6, 6]):
+    def __init__(self, input_size, norm_layer: nn.GroupNorm | nn.Identity, kernel_sizes=[5, 5, 6, 6]):
         super().__init__()
         layers = []
         self.channel_step = 48
@@ -394,7 +395,7 @@ class Decoder(nn.Module):
                 out_channels = 3
                 layers.append(nn.ConvTranspose2d(in_channels, 3, kernel_size=k, stride=2))
             else:
-                layers.append(nn.GroupNorm(1, in_channels))
+                layers.append(norm_layer(1, in_channels))
                 layers.append(
                     nn.ConvTranspose2d(in_channels, out_channels, kernel_size=k,
                                        stride=2))
@@ -429,7 +430,7 @@ class WorldModel(nn.Module):
 
     def __init__(self, batch_cluster_size, latent_dim, latent_classes, rssm_dim,
                  actions_num, kl_loss_scale, kl_loss_balancing, kl_free_nats, discrete_rssm,
-                 predict_discount):
+                 predict_discount, layer_norm: bool):
         super().__init__()
         self.kl_free_nats = kl_free_nats
         self.kl_beta = kl_loss_scale
@@ -446,20 +447,24 @@ class WorldModel(nn.Module):
                                     rssm_dim,
                                     actions_num,
                                     latent_classes,
-                                    discrete_rssm)
-        self.encoder = Encoder()
-        self.image_predictor = Decoder(rssm_dim + latent_dim * latent_classes)
+                                    discrete_rssm,
+                                    norm_layer=nn.Identity if layer_norm else nn.LayerNorm)
+        self.encoder = Encoder(norm_layer=nn.Identity if layer_norm else nn.GroupNorm)
+        self.image_predictor = Decoder(rssm_dim + latent_dim * latent_classes,
+                                       norm_layer=nn.Identity if layer_norm else nn.GroupNorm)
         self.reward_predictor = fc_nn_generator(rssm_dim + latent_dim * latent_classes,
                                                 1,
                                                 hidden_size=400,
                                                 num_layers=5,
                                                 intermediate_activation=nn.ELU,
+                                                layer_norm=layer_norm,
                                                 final_activation=DistLayer('mse'))
         self.discount_predictor = fc_nn_generator(rssm_dim + latent_dim * latent_classes,
                                                   1,
                                                   hidden_size=400,
                                                   num_layers=5,
                                                   intermediate_activation=nn.ELU,
+                                                  layer_norm=layer_norm,
                                                   final_activation=DistLayer('binary'))
         self.reward_normalizer = Normalizer(momentum=1.00, scale=1.0, eps=1e-8)
 
@@ -558,7 +563,7 @@ class WorldModel(nn.Module):
 class ImaginativeCritic(nn.Module):
 
     def __init__(self, discount_factor: float, update_interval: int,
-                 soft_update_fraction: float, value_target_lambda: float, latent_dim: int):
+                 soft_update_fraction: float, value_target_lambda: float, latent_dim: int, layer_norm: bool):
         super().__init__()
         self.gamma = discount_factor
         self.critic_update_interval = update_interval
@@ -571,12 +576,14 @@ class ImaginativeCritic(nn.Module):
                                       400,
                                       5,
                                       intermediate_activation=nn.ELU,
+                                      layer_norm=layer_norm,
                                       final_activation=DistLayer('mse'))
         self.target_critic = fc_nn_generator(latent_dim,
                                              1,
                                              400,
                                              5,
                                              intermediate_activation=nn.ELU,
+                                             layer_norm=layer_norm,
                                              final_activation=DistLayer('mse'))
         self.target_critic.requires_grad_(False)
 
@@ -637,6 +644,7 @@ class DreamerV2(RlAgent):
             actor_lr: float,
             critic_lr: float,
             discrete_rssm: bool,
+            layer_norm: bool,
             device_type: str = 'cpu',
             logger = None):
 
@@ -655,19 +663,21 @@ class DreamerV2(RlAgent):
                                       rssm_dim, actions_num, kl_loss_scale,
                                       kl_loss_balancing, kl_loss_free_nats,
                                       discrete_rssm,
-                                      world_model_predict_discount).to(device_type)
+                                      world_model_predict_discount, layer_norm).to(device_type)
 
         self.actor = fc_nn_generator(rssm_dim + latent_dim * latent_classes,
                                      actions_num if self.is_discrete else actions_num * 2,
                                      400,
                                      5,
+                                     layer_norm=layer_norm,
                                      intermediate_activation=nn.ELU,
                                      final_activation=DistLayer('onehot' if self.is_discrete else 'normal_trunc')).to(device_type)
 
         self.critic = ImaginativeCritic(discount_factor, critic_update_interval,
                                         critic_soft_update_fraction,
                                         critic_value_target_lambda,
-                                        rssm_dim + latent_dim * latent_classes).to(device_type)
+                                        rssm_dim + latent_dim * latent_classes,
+                                        layer_norm=layer_norm).to(device_type)
 
         self.scaler = torch.cuda.amp.GradScaler()
         self.world_model_optimizer = torch.optim.AdamW(self.world_model.parameters(),
@@ -941,6 +951,7 @@ class DreamerV2(RlAgent):
         losses_ac = {l: val.detach().cpu().numpy() for l, val in losses_ac.items()}
         metrics = {l: val.detach().cpu().numpy() for l, val in metrics.items()}
 
+        losses['total'] = sum(losses.values())
         return losses | losses_ac | metrics
 
     def save_ckpt(self, epoch_num: int, losses: dict[str, float]):
@@ -948,13 +959,13 @@ class DreamerV2(RlAgent):
             {
                 'epoch': epoch_num,
                 'world_model_state_dict': self.world_model.state_dict(),
-                'world_model_optimizer_state_dict':self.world_model_optimizer.state_dict(),
+                'world_model_optimizer_state_dict': self.world_model_optimizer.state_dict(),
                 'actor_state_dict': self.actor.state_dict(),
                 'critic_state_dict': self.critic.state_dict(),
                 'actor_optimizer_state_dict': self.actor_optimizer.state_dict(),
                 'critic_optimizer_state_dict': self.critic_optimizer.state_dict(),
                 'losses': losses
-            }, f'dreamerV2-{epoch_num}-{sum(losses.values())}.ckpt')
+            }, f'dreamerV2-{epoch_num}-{losses["total"]}.ckpt')
 
     def load_ckpt(self, ckpt_path: Path):
         ckpt = torch.load(ckpt_path)

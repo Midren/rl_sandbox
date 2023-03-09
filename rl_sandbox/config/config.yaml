@@ -1,22 +1,26 @@
 defaults:
   - agent: dreamer_v2
-  - env: dm_quadruped
+  - env: dm_cartpole
   - _self_
 
 seed: 42
 device_type: cuda
-log_message: Quadruped with rssm
+
+logger:
+  message: Cartpole with discrete
+  log_grads: false
 
 training:
   checkpoint_path: null
-  steps: 1e6
+  steps: 5e5
   prefill: 10000
   batch_size: 800
   pretrain: 100
   prioritize_ends: false
   gradient_steps_per_step: 5
-  save_checkpoint_every: 1e6
-  val_logs_every: 5e3
+  save_checkpoint_every: 2e5
+  val_logs_every: 2.5e4
+
 
 validation:
   rollout_num: 5
