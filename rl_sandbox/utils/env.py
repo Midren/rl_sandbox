@@ -137,6 +137,8 @@ class GymEnv(Env):
         super().__init__(run_on_pixels, obs_res, repeat_action_num, transforms)
 
         self.task_name = task_name
+        if self.task_name.startswith('Crafter'):
+            import crafter
         self.env: gym.Env = gym.make(task_name)
 
         if run_on_pixels:

@@ -1,9 +1,10 @@
 _target_: rl_sandbox.agents.DreamerV2
+layer_norm: true
 # World model parameters
 batch_cluster_size: 50
 latent_dim: 32
 latent_classes: 32
-rssm_dim: 256
+rssm_dim: 200
 kl_loss_scale: 1.0
 kl_loss_balancing: 0.8
 kl_loss_free_nats: 1.0
@@ -27,4 +28,4 @@ critic_update_interval: 100
 # [0-1], 1 means hard update
 critic_soft_update_fraction: 1
 
-discrete_rssm: true
+discrete_rssm: false

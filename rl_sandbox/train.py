@@ -65,7 +65,7 @@ def main(cfg: DictConfig):
 
     # TODO: Implement smarter techniques for exploration
     #       (Plan2Explore, etc)
-    writer = SummaryWriter(comment=cfg.log_message or "")
+    writer = SummaryWriter(comment=cfg.logger.message or "")
 
     env: Env = hydra.utils.instantiate(cfg.env)
     val_env: Env = hydra.utils.instantiate(cfg.env)
@@ -102,7 +102,8 @@ def main(cfg: DictConfig):
         losses = agent.train(s, a, r, n, f, first)
         for loss_name, loss in losses.items():
             if 'grad' in loss_name:
-                writer.add_histogram(f'pre_train/{loss_name}', loss, i)
+                if cfg.logger.log_grads:
+                    writer.add_histogram(f'pre_train/{loss_name}', loss, i)
             else:
                 writer.add_scalar(f'pre_train/{loss_name}', loss.item(), i)
 
@@ -121,7 +122,6 @@ def main(cfg: DictConfig):
     while global_step < cfg.training.steps:
         ### Training and exploration
 
-        # TODO: add buffer end prioritarization
         for s, a, r, n, f, _ in iter_rollout(env, agent):
             buff.add_sample(s, a, r, n, f)
 
@@ -137,7 +137,8 @@ def main(cfg: DictConfig):
                 if global_step % 100 == 0:
                     for loss_name, loss in losses.items():
                         if 'grad' in loss_name:
-                            writer.add_histogram(f'train/{loss_name}', loss, global_step)
+                            if cfg.logger.log_grads:
+                                writer.add_histogram(f'train/{loss_name}', loss, global_step)
                         else:
                             writer.add_scalar(f'train/{loss_name}', loss.item(), global_step)
             global_step += cfg.env.repeat_action_num

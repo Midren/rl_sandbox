@@ -1,4 +1,5 @@
 _target_: rl_sandbox.agents.DreamerV2
+layer_norm: true
 # World model parameters
 batch_cluster_size: 50
 latent_dim: 32
