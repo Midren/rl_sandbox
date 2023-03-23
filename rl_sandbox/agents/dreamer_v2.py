@@ -222,30 +222,6 @@ class Quantize(nn.Module):
         return F.embedding(embed_id, self.embed.transpose(0, 1))
 
 
-# class MlpVAE(nn.Module):
-#     def __init__(self, input_size, latent_size=(8, 8)):
-#         self.encoder = fc_nn_generator(input_size,
-#                                        np.prod(latent_size),
-#                                        hidden_size=np.prod(latent_size),
-#                                        num_layers=2,
-#                                        intermediate_activation=nn.ELU,
-#                                        final_activation=nn.Sequential(
-#                                            View((-1,) + latent_size),
-#                                            DistLayer('onehot')
-#                                         ))
-#         self.decoder = fc_nn_generator(np.prod(latent_size),
-#                                        input_size,
-#                                        hidden_size=np.prod(latent_size),
-#                                        num_layers=2,
-#                                        intermediate_activation=nn.ELU,
-#                                        final_activation=nn.Identity())
-
-#     def forward(self, x):
-#         z = self.encoder(x)
-#         x_hat = self.decoder(z.rsample())
-#         return z, x_hat
-
-
 class RSSM(nn.Module):
     """
     Recurrent State Space Model
@@ -821,9 +797,9 @@ class DreamerV2(RlAgent):
         else:
             # log mean +- std
             pass
-        logger.add_image('val/latent_probs', latent_hist, epoch_num, dataformats='HW')
-        logger.add_image('val/latent_probs_sorted', np.sort(latent_hist, axis=1), epoch_num, dataformats='HW')
-        logger.add_video('val/dreamed_rollout', videos_comparison, epoch_num, fps=20)
+        logger.add_image('val/latent_probs', latent_hist, epoch_num)
+        logger.add_image('val/latent_probs_sorted', np.sort(latent_hist, axis=1), epoch_num)
+        logger.add_video('val/dreamed_rollout', videos_comparison, epoch_num)
 
         rewards_err = torch.Tensor([torch.abs(sum(imagined_rewards[i]) - real_rewards[i].sum()) for i in range(len(imagined_rewards))]).mean()
         logger.add_scalar('val/img_reward_err', rewards_err.item(), epoch_num)
@@ -842,7 +818,6 @@ class DreamerV2(RlAgent):
         if self.is_discrete:
             a = F.one_hot(a.to(torch.int64), num_classes=self.actions_num).squeeze()
         r = self.from_np(r)
-        next_obs = self.preprocess_obs(self.from_np(next_obs))
         discount_factors = (1 - self.from_np(is_finished).type(torch.float32))
         first_flags = self.from_np(is_first).type(torch.float32)
 

@@ -32,7 +32,10 @@ class Rollout:
 # TODO: make buffer concurrent-friendly
 class ReplayBuffer:
 
-    def __init__(self, max_len=2e6, prioritize_ends: bool = False, min_ep_len: int = 1):
+    def __init__(self, max_len=2e6,
+                       prioritize_ends: bool = False,
+                       min_ep_len: int = 1,
+                       device: str = 'cpu'):
         self.rollouts: deque[Rollout] = deque()
         self.rollouts_len: deque[int] = deque()
         self.curr_rollout = None
@@ -40,6 +43,7 @@ class ReplayBuffer:
         self.prioritize_ends = prioritize_ends
         self.max_len = max_len
         self.total_num = 0
+        self.device = device
 
     def __len__(self):
         return self.total_num
@@ -87,13 +91,12 @@ class ReplayBuffer:
         batch_size: int,
         cluster_size: int = 1
     ) -> tuple[States, Actions, Rewards, States, TerminationFlags, IsFirstFlags]:
-        seq_num = batch_size // cluster_size
         # NOTE: constant creation of numpy arrays from self.rollout_len seems terrible for me
         s, a, r, n, t, is_first = [], [], [], [], [], []
         do_add_curr = self.curr_rollout is not None and len(self.curr_rollout.states) > (cluster_size * (self.prioritize_ends + 1))
         tot = self.total_num + (len(self.curr_rollout.states) if do_add_curr else 0)
         r_indeces = np.random.choice(len(self.rollouts) + int(do_add_curr),
-                                     seq_num,
+                                     batch_size,
                                      p=np.array(self.rollouts_len + deque([len(self.curr_rollout.states)] if do_add_curr else [])) / tot)
         s_indeces = []
         for r_idx in r_indeces:
