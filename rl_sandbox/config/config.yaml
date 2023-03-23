@@ -7,6 +7,7 @@ seed: 42
 device_type: cuda
 
 logger:
+  type: tensorboard
   message: Cartpole with discrete
   log_grads: false
 
@@ -14,10 +15,10 @@ training:
   checkpoint_path: null
   steps: 5e5
   prefill: 10000
-  batch_size: 800
+  batch_size: 50
   pretrain: 100
   prioritize_ends: false
-  gradient_steps_per_step: 5
+  train_every: 5
   save_checkpoint_every: 2e5
   val_logs_every: 2.5e4
 
