@@ -11,6 +11,7 @@ import torch.distributions as td
 from torch import nn
 from torch.nn import functional as F
 from jaxtyping import Float, Bool
+from rl_sandbox.vision.dino import ViTFeat
 
 from rl_sandbox.agents.rl_agent import RlAgent
 from rl_sandbox.utils.fc_nn import fc_nn_generator
@@ -426,8 +427,19 @@ class WorldModel(nn.Module):
                                     discrete_rssm,
                                     norm_layer=nn.Identity if layer_norm else nn.LayerNorm)
         self.encoder = Encoder(norm_layer=nn.Identity if layer_norm else nn.GroupNorm)
+        self.dino_vit = ViTFeat("/dino/dino_vitbase8_pretrain/dino_vitbase8_pretrain.pth", 768, 'base', 'k', 8)
+        self.dino_vit.requires_grad_(False)
+        self.dino_predictor = fc_nn_generator(rssm_dim + latent_dim*latent_classes,
+                                               64*768,
+                                               hidden_size=2048,
+                                               num_layers=3,
+                                               intermediate_activation=nn.ELU,
+                                               layer_norm=layer_norm,
+                                               final_activation=DistLayer('mse'))
+
         self.image_predictor = Decoder(rssm_dim + latent_dim * latent_classes,
                                        norm_layer=nn.Identity if layer_norm else nn.GroupNorm)
+
         self.reward_predictor = fc_nn_generator(rssm_dim + latent_dim * latent_classes,
                                                 1,
                                                 hidden_size=400,
@@ -517,12 +529,14 @@ class WorldModel(nn.Module):
 
         r_pred = self.reward_predictor(posterior.combined.transpose(0, 1))
         f_pred = self.discount_predictor(posterior.combined.transpose(0, 1))
-        x_r = self.image_predictor(posterior.combined.transpose(0, 1).flatten(0, 1))
+        d_pred = self.dino_predictor(posterior.combined.transpose(0, 1).flatten(0, 1))
 
         prior_logits = prior.stoch_logits
         posterior_logits = posterior.stoch_logits
-
-        losses['loss_reconstruction'] = -x_r.log_prob(obs).float().mean()
+        ToTensor = tv.transforms.Normalize((0.485, 0.456, 0.406),
+                                               (0.229, 0.224, 0.225))
+        d_features = self.dino_vit(ToTensor(obs + 0.5))[0]
+        losses['loss_reconstruction'] = -d_pred.log_prob(d_features.flatten(1, 2)).float().mean()
         losses['loss_reward_pred'] = -r_pred.log_prob(r_c).float().mean()
         losses['loss_discount_pred'] = -f_pred.log_prob(d_c).float().mean()
         losses['loss_kl_reg'] = KL(prior_logits, posterior_logits)
