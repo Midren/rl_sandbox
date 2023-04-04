@@ -32,7 +32,7 @@ def val_logs(agent, val_cfg: DictConfig, env: Env, global_step: int, logger: Log
 
         for rollout in rollouts:
             video = np.expand_dims(rollout.observations.transpose(0, 3, 1, 2), 0)
-            logger.add_video('val/visualization', video, global_step, fps=20)
+            logger.add_video('val/visualization', video, global_step)
             # FIXME: Very bad from architecture point
             with torch.no_grad():
                 agent.viz_log(rollout, logger, global_step)
@@ -54,7 +54,7 @@ def main(cfg: DictConfig):
 
     # TODO: Implement smarter techniques for exploration
     #       (Plan2Explore, etc)
-    logger = Logger(*cfg.logger)
+    logger = Logger(**cfg.logger)
 
     env: Env = hydra.utils.instantiate(cfg.env)
     val_env: Env = hydra.utils.instantiate(cfg.env)
@@ -99,10 +99,10 @@ def main(cfg: DictConfig):
         logger.log(losses, i, mode='pre_train')
 
         # TODO: remove constants
-        log_every_n = 25
-        if i % log_every_n == 0:
-            st = int(cfg.training.pretrain) // log_every_n
-            val_logs(agent, cfg.validation, val_env, -st + i // log_every_n, logger)
+        # log_every_n = 25
+        # if i % log_every_n == 0:
+        #     st = int(cfg.training.pretrain) // log_every_n
+    val_logs(agent, cfg.validation, val_env, -1, logger)
 
     if cfg.training.checkpoint_path is not None:
         prev_global_step = global_step = agent.load_ckpt(cfg.training.checkpoint_path)
