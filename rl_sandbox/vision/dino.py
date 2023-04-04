@@ -276,15 +276,17 @@ class VisionTransformer(nn.Module):
 
 
 
-def vit_small(patch_size=16, **kwargs):
+def vit_small(patch_size=16, img_size=[224], **kwargs):
     model = VisionTransformer(
+        img_size=img_size,
         patch_size=patch_size, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4,
         qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
 
-def vit_base(patch_size=16, **kwargs):
+def vit_base(patch_size=16, img_size=[224], **kwargs):
     model = VisionTransformer(
+        img_size=img_size,
         patch_size=patch_size, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4,
         qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
@@ -294,13 +296,13 @@ def vit_base(patch_size=16, **kwargs):
 
 class ViTFeat(nn.Module):
     """ Vision Transformer """
-    def __init__(self, pretrained_pth, feat_dim, vit_arch = 'base', vit_feat = 'k', patch_size=16):
+    def __init__(self, pretrained_pth, feat_dim, vit_arch = 'base', vit_feat = 'k', patch_size=16, img_size=[224]):
         super().__init__()
         if vit_arch == 'base' :
-            self.model = vit_base(patch_size=patch_size, num_classes=0)
+            self.model = vit_base(patch_size=patch_size, num_classes=0, img_size=img_size)
 
         else :
-            self.model = vit_small(patch_size=patch_size, num_classes=0)
+            self.model = vit_small(patch_size=patch_size, num_classes=0, img_size=img_size)
 
         self.feat_dim = feat_dim
         self.vit_feat = vit_feat
