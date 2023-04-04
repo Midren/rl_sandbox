@@ -42,6 +42,13 @@
         "program": "rl_sandbox/train.py",
         "args": []
       }
+    },
+    "Run dino": {
+      "extends": "python-base",
+      "configuration": {
+        "program": "rl_sandbox/vision/my_slot_attention.py",
+        "args": []
+      }
     }
   }
 }

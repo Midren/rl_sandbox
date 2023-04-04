@@ -1,6 +1,7 @@
 defaults:
   - agent: dreamer_v2
   - env: dm_cartpole
+  - training: dm
   - _self_
 
 seed: 42
@@ -8,19 +9,16 @@ device_type: cuda
 
 logger:
   type: tensorboard
-  message: Cartpole with discrete
+  message: Cartpole with convolutional decoder
+  #message: test_last
   log_grads: false
 
 training:
   checkpoint_path: null
-  steps: 5e5
-  prefill: 10000
+  steps: 1e6
   batch_size: 50
-  pretrain: 100
-  prioritize_ends: false
-  train_every: 5
-  save_checkpoint_every: 2e5
-  val_logs_every: 2.5e4
+  val_logs_every: 2e4
+  #val_logs_every: 2.5e3
 
 
 validation:
