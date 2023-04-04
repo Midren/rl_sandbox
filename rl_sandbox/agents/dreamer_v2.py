@@ -388,7 +388,7 @@ class Decoder(nn.Module):
 
 class ViTDecoder(nn.Module):
 
-    def __init__(self, input_size, norm_layer: nn.GroupNorm | nn.Identity, kernel_sizes=[5, 5, 5, 3]):
+    def __init__(self, input_size, norm_layer: nn.GroupNorm | nn.Identity, kernel_sizes=[5, 5, 5, 3, 5, 3]):
         super().__init__()
         layers = []
         self.channel_step = 12
@@ -435,9 +435,9 @@ class Normalizer(nn.Module):
 
 class WorldModel(nn.Module):
 
-    def __init__(self, batch_cluster_size, latent_dim, latent_classes, rssm_dim,
+    def __init__(self, img_size, batch_cluster_size, latent_dim, latent_classes, rssm_dim,
                  actions_num, kl_loss_scale, kl_loss_balancing, kl_free_nats, discrete_rssm,
-                 predict_discount, layer_norm: bool, encode_vit: bool, decode_vit: bool):
+                 predict_discount, layer_norm: bool, encode_vit: bool, decode_vit: bool, vit_l2_ratio: float):
         super().__init__()
         self.kl_free_nats = kl_free_nats
         self.kl_beta = kl_loss_scale
@@ -451,6 +451,7 @@ class WorldModel(nn.Module):
         self.predict_discount = predict_discount
         self.encode_vit = encode_vit
         self.decode_vit = decode_vit
+        self.vit_l2_ratio = vit_l2_ratio
 
         self.recurrent_model = RSSM(latent_dim,
                                     rssm_dim,
@@ -459,8 +460,10 @@ class WorldModel(nn.Module):
                                     discrete_rssm,
                                     norm_layer=nn.Identity if layer_norm else nn.LayerNorm)
         if encode_vit or decode_vit:
-            # self.dino_vit = ViTFeat("/dino/dino_vitbase8_pretrain/dino_vitbase8_pretrain.pth", 768, 'base', 'k', 8)
-            self.dino_vit = ViTFeat("/dino/dino_deitsmall8_pretrain/dino_deitsmall8_pretrain.pth", 384, 'small', 'k', 8)
+            # self.dino_vit = ViTFeat("/dino/dino_vitbase8_pretrain/dino_vitbase8_pretrain.pth", feat_dim=768, vit_arch='base', patch_size=8)
+            self.dino_vit = ViTFeat("/dino/dino_deitsmall8_pretrain/dino_deitsmall8_pretrain.pth", feat_dim=384, vit_arch='small', patch_size=8)
+            self.vit_feat_dim = self.dino_vit.feat_dim
+            self.vit_num_patches = self.dino_vit.model.patch_embed.num_patches
             self.dino_vit.requires_grad_(False)
 
         if encode_vit:
@@ -580,21 +583,32 @@ class WorldModel(nn.Module):
 
         r_pred = self.reward_predictor(posterior.combined.transpose(0, 1))
         f_pred = self.discount_predictor(posterior.combined.transpose(0, 1))
+
+        losses['loss_reconstruction_img'] = 0
+
         if not self.decode_vit:
             x_r = self.image_predictor(posterior.combined.transpose(0, 1).flatten(0, 1))
-            losses['loss_reconstruction_img'] = 0
             losses['loss_reconstruction'] = -x_r.log_prob(obs).float().mean()
         else:
-            x_r = self.image_predictor(posterior.combined.transpose(0, 1).flatten(0, 1).detach())
+            if self.vit_l2_ratio != 1.0:
+                x_r = self.image_predictor(posterior.combined.transpose(0, 1).flatten(0, 1))
+                img_rec = -x_r.log_prob(obs).float().mean()
+            else:
+                img_rec = 0
+                x_r_detached = self.image_predictor(posterior.combined.transpose(0, 1).flatten(0, 1).detach())
+                losses['loss_reconstruction_img'] = -x_r_detached.log_prob(obs).float().mean()
             d_pred = self.dino_predictor(posterior.combined.transpose(0, 1).flatten(0, 1))
             inp = obs
             if not self.encode_vit:
-                ToTensor = tv.transforms.Normalize((0.485, 0.456, 0.406),
-                                                       (0.229, 0.224, 0.225))
+                ToTensor = tv.transforms.Compose([tv.transforms.Normalize((0.485, 0.456, 0.406),
+                                                       (0.229, 0.224, 0.225)),
+                                                  tv.transforms.Resize(224, antialias=True)])
+                # ToTensor = tv.transforms.Normalize((0.485, 0.456, 0.406),
+                #                                        (0.229, 0.224, 0.225))
                 inp = ToTensor(obs + 0.5)
             d_features = self.dino_vit(inp)
-            losses['loss_reconstruction_img'] = -x_r.log_prob(obs).float().mean()
-            losses['loss_reconstruction'] = -d_pred.log_prob(d_features.reshape(b, 384, 8, 8)).float().mean()/2
+            losses['loss_reconstruction'] = (self.vit_l2_ratio * -d_pred.log_prob(d_features.reshape(b, self.vit_feat_dim, 28, 28)).float().mean()/2 +
+                                            (1-self.vit_l2_ratio) * img_rec)
 
         prior_logits = prior.stoch_logits
         posterior_logits = posterior.stoch_logits
@@ -673,7 +687,7 @@ class DreamerV2(RlAgent):
 
     def __init__(
             self,
-            obs_space_num: int,  # NOTE: encoder/decoder will work only with 64x64 currently
+            obs_space_num: list[int],  # NOTE: encoder/decoder will work only with 64x64 currently
             actions_num: int,
             action_type: str,
             batch_cluster_size: int,
@@ -698,6 +712,7 @@ class DreamerV2(RlAgent):
             layer_norm: bool,
             encode_vit: bool,
             decode_vit: bool,
+            vit_l2_ratio: float,
             device_type: str = 'cpu',
             logger = None):
 
@@ -712,12 +727,12 @@ class DreamerV2(RlAgent):
         if self.rho is None:
             self.rho = self.is_discrete
 
-        self.world_model = WorldModel(batch_cluster_size, latent_dim, latent_classes,
+        self.world_model = WorldModel(obs_space_num[0], batch_cluster_size, latent_dim, latent_classes,
                                       rssm_dim, actions_num, kl_loss_scale,
                                       kl_loss_balancing, kl_loss_free_nats,
                                       discrete_rssm,
                                       world_model_predict_discount, layer_norm,
-                                      encode_vit, decode_vit).to(device_type)
+                                      encode_vit, decode_vit, vit_l2_ratio).to(device_type)
 
         self.actor = fc_nn_generator(rssm_dim + latent_dim * latent_classes,
                                      actions_num if self.is_discrete else actions_num * 2,
@@ -932,7 +947,7 @@ class DreamerV2(RlAgent):
                                 losses['loss_discount_pred'])
         # for l in losses.values():
         #     world_model_loss += l
-        if self.world_model.decode_vit:
+        if self.world_model.decode_vit and self.world_model.vit_l2_ratio != 1.0:
             self.image_predictor_optimizer.zero_grad(set_to_none=True)
             self.scaler.scale(image_predictor_loss).backward()
             self.scaler.unscale_(self.image_predictor_optimizer)
@@ -944,14 +959,11 @@ class DreamerV2(RlAgent):
 
         # FIXME: clip gradient should be parametrized
         self.scaler.unscale_(self.world_model_optimizer)
-        # for tag, value in self.world_model.named_parameters():
-        #     wm_metrics[f"grad/{tag.replace('.', '/')}"] = value.detach()
         nn.utils.clip_grad_norm_(self.world_model.parameters(), 100)
         self.scaler.step(self.world_model_optimizer)
 
         metrics = defaultdict(
             lambda: torch.zeros(1).to(self.device))
-        metrics |= wm_metrics
 
         with torch.cuda.amp.autocast(enabled=True):
             losses_ac = defaultdict(
@@ -1015,9 +1027,6 @@ class DreamerV2(RlAgent):
         self.scaler.unscale_(self.critic_optimizer)
         nn.utils.clip_grad_norm_(self.actor.parameters(), 100)
         nn.utils.clip_grad_norm_(self.critic.parameters(), 100)
-
-        # for tag, value in self.actor.named_parameters():
-        #     wm_metrics[f"grad/{tag.replace('.', '/')}"] = value.detach()
 
         self.scaler.step(self.actor_optimizer)
         self.scaler.step(self.critic_optimizer)

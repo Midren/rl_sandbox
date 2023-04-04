@@ -1,6 +1,6 @@
 defaults:
   - agent: dreamer_v2
-  - env: dm_cartpole
+  - env: dm_quadruped
   - training: dm
   - _self_
 
@@ -9,21 +9,23 @@ device_type: cuda
 
 logger:
   type: tensorboard
-  message: Cartpole with convolutional decoder
+  message: Quadruped with 224px input inside ViT
   #message: test_last
   log_grads: false
 
 training:
   checkpoint_path: null
   steps: 1e6
-  batch_size: 50
+  batch_size: 16
   val_logs_every: 2e4
-  #val_logs_every: 2.5e3
 
 
 validation:
   rollout_num: 5
   visualize: true
+
+#agents:
+#  batch_cluster_size: 10
 
 debug:
   profiler: false

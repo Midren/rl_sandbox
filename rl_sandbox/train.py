@@ -1,4 +1,6 @@
 import random
+import os
+os.environ['MUJOCO_GL'] = 'egl'
 
 import crafter
 import hydra

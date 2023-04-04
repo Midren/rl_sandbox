@@ -30,4 +30,5 @@ critic_soft_update_fraction: 1
 
 discrete_rssm: false
 decode_vit: true
+vit_l2_ratio: 1.0
 encode_vit: false
