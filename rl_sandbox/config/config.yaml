@@ -9,7 +9,7 @@ device_type: cuda
 
 logger:
   type: tensorboard
-  message: Quadruped with 224px input inside ViT
+  message: Quadruped with 224px input inside ViT and 16 patch size
   #message: test_last
   log_grads: false
 
