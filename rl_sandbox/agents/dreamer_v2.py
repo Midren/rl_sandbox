@@ -388,7 +388,9 @@ class Decoder(nn.Module):
 
 class ViTDecoder(nn.Module):
 
-    def __init__(self, input_size, norm_layer: nn.GroupNorm | nn.Identity, kernel_sizes=[5, 5, 5, 3, 5, 3]):
+    # def __init__(self, input_size, norm_layer: nn.GroupNorm | nn.Identity, kernel_sizes=[5, 5, 5, 3, 5, 3]):
+    # def __init__(self, input_size, norm_layer: nn.GroupNorm | nn.Identity, kernel_sizes=[5, 5, 5, 5, 3]):
+    def __init__(self, input_size, norm_layer: nn.GroupNorm | nn.Identity, kernel_sizes=[5, 5, 5, 3, 3]):
         super().__init__()
         layers = []
         self.channel_step = 12
@@ -461,7 +463,8 @@ class WorldModel(nn.Module):
                                     norm_layer=nn.Identity if layer_norm else nn.LayerNorm)
         if encode_vit or decode_vit:
             # self.dino_vit = ViTFeat("/dino/dino_vitbase8_pretrain/dino_vitbase8_pretrain.pth", feat_dim=768, vit_arch='base', patch_size=8)
-            self.dino_vit = ViTFeat("/dino/dino_deitsmall8_pretrain/dino_deitsmall8_pretrain.pth", feat_dim=384, vit_arch='small', patch_size=8)
+            # self.dino_vit = ViTFeat("/dino/dino_deitsmall8_pretrain/dino_deitsmall8_pretrain.pth", feat_dim=384, vit_arch='small', patch_size=8)
+            self.dino_vit = ViTFeat("/dino/dino_deitsmall16_pretrain/dino_deitsmall16_pretrain.pth", feat_dim=384, vit_arch='small', patch_size=16)
             self.vit_feat_dim = self.dino_vit.feat_dim
             self.vit_num_patches = self.dino_vit.model.patch_embed.num_patches
             self.dino_vit.requires_grad_(False)
@@ -607,7 +610,7 @@ class WorldModel(nn.Module):
                 #                                        (0.229, 0.224, 0.225))
                 inp = ToTensor(obs + 0.5)
             d_features = self.dino_vit(inp)
-            losses['loss_reconstruction'] = (self.vit_l2_ratio * -d_pred.log_prob(d_features.reshape(b, self.vit_feat_dim, 28, 28)).float().mean()/2 +
+            losses['loss_reconstruction'] = (self.vit_l2_ratio * -d_pred.log_prob(d_features.reshape(b, self.vit_feat_dim, 14, 14)).float().mean()/2 +
                                             (1-self.vit_l2_ratio) * img_rec)
 
         prior_logits = prior.stoch_logits
