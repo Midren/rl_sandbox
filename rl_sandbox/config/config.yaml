@@ -1,6 +1,6 @@
 defaults:
   - agent: dreamer_v2
-  - env: dm_quadruped
+  - env: dm_acrobot
   - training: dm
   - _self_
 
@@ -9,23 +9,19 @@ device_type: cuda
 
 logger:
   type: tensorboard
-  message: Quadruped with 224px input inside ViT and 16 patch size
-  #message: test_last
+  message: Acrobot reference with 1 nat
   log_grads: false
 
 training:
   checkpoint_path: null
-  steps: 1e6
-  batch_size: 16
+  steps: 1.5e6
+  batch_size: 50
   val_logs_every: 2e4
 
 
 validation:
   rollout_num: 5
   visualize: true
-
-#agents:
-#  batch_cluster_size: 10
 
 debug:
   profiler: false

@@ -298,7 +298,7 @@ class RSSM(nn.Module):
         #       taking only one random between all ensembles
         # NOTE: in Dreamer ensemble_num is always 1
         idx = torch.randint(0, self.ensemble_num, ())
-        return dists_per_model[idx]
+        return dists_per_model[0]
 
     def predict_next(self,
                      prev_state: State,
@@ -424,7 +424,7 @@ class Normalizer(nn.Module):
         self.momentum = momentum
         self.scale = scale
         self.eps= eps
-        self.mag = torch.ones(1, dtype=torch.float32)
+        self.register_buffer('mag', torch.ones(1, dtype=torch.float32))
         self.mag.requires_grad = False
 
     def forward(self, x):
@@ -432,7 +432,7 @@ class Normalizer(nn.Module):
         return (x / (self.mag + self.eps))*self.scale
 
     def update(self, x):
-        self.mag = self.momentum * self.mag.to(x.device)  + (1 - self.momentum) * (x.abs().mean()).detach()
+        self.mag = self.momentum * self.mag  + (1 - self.momentum) * (x.abs().mean()).detach()
 
 
 class WorldModel(nn.Module):
@@ -441,7 +441,7 @@ class WorldModel(nn.Module):
                  actions_num, kl_loss_scale, kl_loss_balancing, kl_free_nats, discrete_rssm,
                  predict_discount, layer_norm: bool, encode_vit: bool, decode_vit: bool, vit_l2_ratio: float):
         super().__init__()
-        self.kl_free_nats = kl_free_nats
+        self.register_buffer('kl_free_nats', kl_free_nats * torch.ones(1))
         self.kl_beta = kl_loss_scale
         self.rssm_dim = rssm_dim
         self.latent_dim = latent_dim
@@ -549,23 +549,30 @@ class WorldModel(nn.Module):
         d_c = discount.reshape(-1, self.cluster_size, 1)
         first_c = first.reshape(-1, self.cluster_size, 1)
 
-        losses = defaultdict(lambda: torch.zeros(1).to(next(self.parameters()).device))
-        metrics = defaultdict(lambda: torch.zeros(1).to(next(self.parameters()).device))
+        losses = {}
+        metrics = {}
 
-        def KL(dist1, dist2, free_nat = True):
+        def KL(dist1, dist2):
             KL_ = torch.distributions.kl_divergence
-            one = self.kl_free_nats * torch.ones(1, device=next(self.parameters()).device)
-            # TODO: kl_free_avg is used always
-            if free_nat:
-                kl_lhs = torch.maximum(KL_(Dist(dist2.detach()), Dist(dist1)).mean(), one)
-                kl_rhs = torch.maximum(KL_(Dist(dist2), Dist(dist1.detach())).mean(), one)
-            else:
-                kl_lhs = KL_(Dist(dist2.detach()), Dist(dist1)).mean()
-                kl_rhs = KL_(Dist(dist2), Dist(dist1.detach())).mean()
+            kl_lhs = KL_(td.OneHotCategoricalStraightThrough(logits=dist2.detach()), td.OneHotCategoricalStraightThrough(logits=dist1)).mean()
+            kl_rhs = KL_(td.OneHotCategoricalStraightThrough(logits=dist2), td.OneHotCategoricalStraightThrough(logits=dist1.detach())).mean()
+            kl_lhs = torch.maximum(kl_lhs, self.kl_free_nats)
+            kl_rhs = torch.maximum(kl_rhs, self.kl_free_nats)
             return (self.kl_beta * (self.alpha * kl_lhs + (1 - self.alpha) * kl_rhs))
 
         priors = []
         posteriors = []
+
+        if self.decode_vit:
+            inp = obs
+            if not self.encode_vit:
+                ToTensor = tv.transforms.Compose([tv.transforms.Normalize((0.485, 0.456, 0.406),
+                                                       (0.229, 0.224, 0.225)),
+                                                  tv.transforms.Resize(224, antialias=True)])
+                # ToTensor = tv.transforms.Normalize((0.485, 0.456, 0.406),
+                #                                        (0.229, 0.224, 0.225))
+                inp = ToTensor(obs + 0.5)
+            d_features = self.dino_vit(inp)
 
         prev_state = self.get_initial_state(b // self.cluster_size)
         for t in range(self.cluster_size):
@@ -579,7 +586,7 @@ class WorldModel(nn.Module):
             priors.append(prior)
             posteriors.append(posterior)
 
-            losses['loss_determ_recons'] += diff
+            # losses['loss_determ_recons'] += diff
 
         posterior = State.stack(posteriors)
         prior = State.stack(priors)
@@ -587,7 +594,7 @@ class WorldModel(nn.Module):
         r_pred = self.reward_predictor(posterior.combined.transpose(0, 1))
         f_pred = self.discount_predictor(posterior.combined.transpose(0, 1))
 
-        losses['loss_reconstruction_img'] = 0
+        losses['loss_reconstruction_img'] = torch.Tensor([0]).to(obs.device)
 
         if not self.decode_vit:
             x_r = self.image_predictor(posterior.combined.transpose(0, 1).flatten(0, 1))
@@ -601,16 +608,7 @@ class WorldModel(nn.Module):
                 x_r_detached = self.image_predictor(posterior.combined.transpose(0, 1).flatten(0, 1).detach())
                 losses['loss_reconstruction_img'] = -x_r_detached.log_prob(obs).float().mean()
             d_pred = self.dino_predictor(posterior.combined.transpose(0, 1).flatten(0, 1))
-            inp = obs
-            if not self.encode_vit:
-                ToTensor = tv.transforms.Compose([tv.transforms.Normalize((0.485, 0.456, 0.406),
-                                                       (0.229, 0.224, 0.225)),
-                                                  tv.transforms.Resize(224, antialias=True)])
-                # ToTensor = tv.transforms.Normalize((0.485, 0.456, 0.406),
-                #                                        (0.229, 0.224, 0.225))
-                inp = ToTensor(obs + 0.5)
-            d_features = self.dino_vit(inp)
-            losses['loss_reconstruction'] = (self.vit_l2_ratio * -d_pred.log_prob(d_features.reshape(b, self.vit_feat_dim, 14, 14)).float().mean()/2 +
+            losses['loss_reconstruction'] = (self.vit_l2_ratio * -d_pred.log_prob(d_features.reshape(b, self.vit_feat_dim, 14, 14)).float().mean()/4 +
                                             (1-self.vit_l2_ratio) * img_rec)
 
         prior_logits = prior.stoch_logits
@@ -937,12 +935,10 @@ class DreamerV2(RlAgent):
 
         # take some latent embeddings as initial
         with torch.cuda.amp.autocast(enabled=True):
-            losses, discovered_states, wm_metrics = self.world_model.calculate_loss(
-                    obs, a, r, discount_factors, first_flags)
+            losses, discovered_states, wm_metrics = self.world_model.calculate_loss(obs, a, r, discount_factors, first_flags)
             self.world_model.recurrent_model.discretizer_scheduler.step()
 
             # NOTE: 'aten::nonzero' inside KL divergence is not currently supported on M1 Pro MPS device
-            world_model_loss = torch.Tensor(0).to(self.device)
             image_predictor_loss = losses['loss_reconstruction_img']
             world_model_loss = (losses['loss_reconstruction'] +
                                 losses['loss_reward_pred'] +
@@ -965,12 +961,10 @@ class DreamerV2(RlAgent):
         nn.utils.clip_grad_norm_(self.world_model.parameters(), 100)
         self.scaler.step(self.world_model_optimizer)
 
-        metrics = defaultdict(
-            lambda: torch.zeros(1).to(self.device))
+        metrics = {}
 
         with torch.cuda.amp.autocast(enabled=True):
-            losses_ac = defaultdict(
-                lambda: torch.zeros(1).to(self.device))
+            losses_ac = {}
             initial_states = State(discovered_states.determ.flatten(0, 1).unsqueeze(0).detach(),
                                    discovered_states.stoch_logits.flatten(0, 1).unsqueeze(0).detach(),
                                    discovered_states.stoch_.flatten(0, 1).unsqueeze(0).detach())
@@ -1000,14 +994,14 @@ class DreamerV2(RlAgent):
             action_dists = self.actor(zs[:-2].detach())
             baseline = self.critic.target_critic(zs[:-2]).mode
             advantage = (vs[1:] - baseline).detach()
-            losses_ac['loss_actor_reinforce'] += -(self.rho * action_dists.log_prob(actions[1:-1].detach()).unsqueeze(2) * discount_factors[:-2] * advantage).mean()
+            losses_ac['loss_actor_reinforce'] = -(self.rho * action_dists.log_prob(actions[1:-1].detach()).unsqueeze(2) * discount_factors[:-2] * advantage).mean()
             losses_ac['loss_actor_dynamics_backprop'] = -((1 - self.rho) * (vs[1:]*discount_factors[:-2])).mean()
 
             def calculate_entropy(dist):
                 return dist.entropy().unsqueeze(2)
                 # return dist.base_dist.base_dist.entropy().unsqueeze(2)
 
-            losses_ac['loss_actor_entropy'] += -(self.eta * calculate_entropy(action_dists)*discount_factors[:-2]).mean()
+            losses_ac['loss_actor_entropy'] = -(self.eta * calculate_entropy(action_dists)*discount_factors[:-2]).mean()
             losses_ac['loss_actor'] = losses_ac['loss_actor_reinforce'] + losses_ac['loss_actor_dynamics_backprop'] + losses_ac['loss_actor_entropy']
 
             # mean and std are estimated statistically as tanh transformation is used
