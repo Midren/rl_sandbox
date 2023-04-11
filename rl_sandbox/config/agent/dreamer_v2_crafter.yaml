@@ -29,5 +29,5 @@ critic_soft_update_fraction: 1
 
 discrete_rssm: false
 decode_vit: true
-vit_l2_ratio: 1.0
+vit_l2_ratio: 0.5
 encode_vit: false

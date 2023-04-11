@@ -25,11 +25,13 @@ class SummaryWriterMock():
 class Logger:
     def __init__(self, type: t.Optional[str],
                        message: t.Optional[str] = None,
-                       log_grads: bool = True) -> None:
+                       log_grads: bool = True,
+                       log_dir: t.Optional[str] = None
+                 ) -> None:
         self.type = type
         match type:
             case "tensorboard":
-                self.writer = SummaryWriter(comment=message or "")
+                self.writer = SummaryWriter(comment=message or "", log_dir=log_dir)
             case None:
                 self.writer = SummaryWriterMock()
             case _:
@@ -49,7 +51,7 @@ class Logger:
         self.writer.add_scalar(name, value, global_step)
 
     def add_image(self, name: str, image: t.Any, global_step: int):
-        self.writer.add_image(name, image, global_step, dataformats='HW')
+        self.writer.add_image(name, image, global_step)
 
     def add_video(self, name: str, video: t.Any, global_step: int):
         self.writer.add_video(name, video, global_step, fps=20)

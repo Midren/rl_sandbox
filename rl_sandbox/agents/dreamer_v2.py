@@ -946,7 +946,7 @@ class DreamerV2(RlAgent):
                                 losses['loss_discount_pred'])
         # for l in losses.values():
         #     world_model_loss += l
-        if self.world_model.decode_vit and self.world_model.vit_l2_ratio != 1.0:
+        if self.world_model.decode_vit and self.world_model.vit_l2_ratio == 1.0:
             self.image_predictor_optimizer.zero_grad(set_to_none=True)
             self.scaler.scale(image_predictor_loss).backward()
             self.scaler.unscale_(self.image_predictor_optimizer)
