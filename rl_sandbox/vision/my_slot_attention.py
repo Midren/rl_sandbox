@@ -4,7 +4,6 @@ from torch import nn
 import torch.nn.functional as F
 from jaxtyping import Float
 import torchvision as tv
-from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import numpy as np
 
@@ -12,10 +11,9 @@ from rl_sandbox.vision.dino import ViTFeat
 from rl_sandbox.utils.logger import Logger
 
 class SlotAttention(nn.Module):
-    def __init__(self, num_slots: int, seq_num: int, n_dim: int, n_iter: int):
+    def __init__(self, num_slots: int, n_dim: int, n_iter: int):
         super().__init__()
 
-        self.seq_num = seq_num
         self.n_slots = num_slots
         self.n_iter = n_iter
         self.n_dim = n_dim
@@ -39,11 +37,14 @@ class SlotAttention(nn.Module):
         self.inputs_proj = nn.Linear(n_dim, n_dim*2)
         self.inputs_norm = nn.LayerNorm(self.n_dim)
 
-    def forward(self, X: Float[torch.Tensor, 'batch seq n_dim']) -> Float[torch.Tensor, 'batch num_slots n_dim']:
+    def forward(self, X: Float[torch.Tensor, 'batch seq n_dim'], prev_slots: t.Optional[Float[torch.Tensor, 'batch num_slots n_dim']]) -> Float[torch.Tensor, 'batch num_slots n_dim']:
         batch, _, _ = X.shape
         k, v = self.inputs_proj(self.inputs_norm(X)).chunk(2, dim=-1)
 
-        slots = self.slots_mu + self.slots_logsigma.exp() * torch.randn(batch, self.n_slots, self.n_dim, device=X.device)
+        if prev_slots is None:
+            slots = self.slots_mu + self.slots_logsigma.exp() * torch.randn(batch, self.n_slots, self.n_dim, device=X.device)
+        else:
+            slots = prev_slots
 
         for _ in range(self.n_iter):
             slots_prev = slots
@@ -79,16 +80,13 @@ class PositionalEmbedding(nn.Module):
         return X + self.proj(self.grid).permute(0, 3, 1, 2)
 
 class SlottedAutoEncoder(nn.Module):
-    def __init__(self, num_slots: int, n_iter: int):
+    def __init__(self, num_slots: int, n_iter: int, dino_inp_size: int = 224):
         super().__init__()
         in_channels = 3
-        latent_dim = 16
-        self.n_dim = 196
+        self.n_dim = 128
         self.lat_dim = int(self.n_dim**0.5)
         self.encoder = nn.Sequential(
             nn.Conv2d(in_channels, 64, kernel_size=5, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, kernel_size=5, stride=2, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(64, 64, kernel_size=5, stride=2, padding=1),
             nn.ReLU(inplace=True),
@@ -104,13 +102,16 @@ class SlottedAutoEncoder(nn.Module):
             nn.Linear(self.n_dim, self.n_dim)
         )
 
-        seq_num = latent_dim
+        self.dino_inp_size = dino_inp_size
         self.dino_vit = ViTFeat("/dino/dino_deitsmall16_pretrain/dino_deitsmall16_pretrain.pth", feat_dim=384, vit_arch='small', patch_size=16)
-        self.positional_augmenter_inp = PositionalEmbedding(self.n_dim, (13, 13))
-        self.positional_augmenter_dec = PositionalEmbedding(self.n_dim, (self.lat_dim, self.lat_dim))
-        self.positional_augmenter_vit_dec = PositionalEmbedding(self.n_dim, (14, 14))
-        self.slot_attention = SlotAttention(num_slots, seq_num, self.n_dim, n_iter)
-        self.img_decoder = nn.Sequential( # Dx14x14 -> (3+1)x112x112
+        self.vit_patch_num = self.dino_inp_size // self.dino_vit.patch_size
+        self.vit_feat = self.dino_vit.feat_dim
+
+        self.positional_augmenter_inp = PositionalEmbedding(self.n_dim, (7, 7))
+        self.positional_augmenter_dec = PositionalEmbedding(self.n_dim, (8, 8))
+        self.positional_augmenter_vit_dec = PositionalEmbedding(self.n_dim, (self.lat_dim, self.lat_dim))
+        self.slot_attention = SlotAttention(num_slots, self.n_dim, n_iter)
+        self.img_decoder = nn.Sequential( # Dx8x8 -> (3+1)x64x64
             nn.ConvTranspose2d(self.n_dim, 64, kernel_size=5, stride=(2, 2), padding=2, output_padding=1),
             nn.ReLU(inplace=True),
             nn.ConvTranspose2d(64, 64, kernel_size=5, stride=(2, 2), padding=2, output_padding=1),
@@ -125,11 +126,11 @@ class SlottedAutoEncoder(nn.Module):
             nn.ReLU(inplace=True),
             nn.ConvTranspose2d(192, 192, kernel_size=5, stride=(2, 2), padding=2, output_padding=1),
             nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(192, 384, kernel_size=5, stride=(2, 2), padding=2, output_padding=1),
+            nn.ConvTranspose2d(192, self.vit_feat, kernel_size=5, stride=(2, 2), padding=2, output_padding=1),
             nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(384, 576, kernel_size=3, stride=(2, 2), padding=2, output_padding=1),
+            nn.ConvTranspose2d(self.vit_feat, self.vit_feat*2, kernel_size=3, stride=(2, 2), padding=2, output_padding=1),
             nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(576, 385, kernel_size=3, stride=(1, 1), padding=1),
+            nn.ConvTranspose2d(self.vit_feat*2, self.vit_feat+1, kernel_size=3, stride=(1, 1), padding=1),
         )
 
         # self.vit_decoder_mlp = nn.Sequential(
@@ -139,49 +140,56 @@ class SlottedAutoEncoder(nn.Module):
         #         nn.ReLU(inplace=True),
         #         nn.Linear(1024, 1024),
         #         nn.ReLU(inplace=True),
-        #         nn.Linear(1024, 385),
+        #         nn.Linear(1024, self.vit_feat+1),
         #         nn.ReLU(inplace=True)
         # )
 
-    def forward(self, X: Float[torch.Tensor, 'batch 3 h w']) -> t.Tuple[Float[torch.Tensor, 'batch 3 h w'], Float[torch.Tensor, 'batch num_slots 4 h w']]:
+    def forward(self, X: Float[torch.Tensor, 'batch 3 h w'], prev_slots: t.Optional[Float[torch.Tensor, 'batch num_slots n_dim']] = None) -> t.Dict[str, torch.Tensor]:
         features = self.encoder(X) # -> batch D h w
         features_with_pos_enc = self.positional_augmenter_inp(features) # -> batch D h w
 
+        resize = tv.transforms.Resize(self.dino_inp_size, antialias=True)
+
         batch, seq, _, _ = X.shape
-        vit_features = self.dino_vit(X)
-        vit_res_num = int(vit_features.shape[-1]**0.5)
-        vit_features = vit_features.reshape(batch, -1, vit_res_num, vit_res_num)
+        vit_features = self.dino_vit(resize(X))
+        vit_features = vit_features.reshape(batch, -1, self.vit_patch_num, self.vit_patch_num)
 
         pre_slot_features = self.mlp(features_with_pos_enc.permute(0, 2, 3, 1).reshape(batch, -1, self.n_dim))
 
-        slots = self.slot_attention(pre_slot_features) # -> batch num_slots D
-        slots = slots.flatten(0, 1).reshape(-1, 1, 1, self.n_dim).permute(0, 3, 1, 2)
+        slots = self.slot_attention(pre_slot_features, prev_slots) # -> batch num_slots D
+        slots_grid = slots.flatten(0, 1).reshape(-1, 1, 1, self.n_dim).permute(0, 3, 1, 2)
 
-        # slots_with_vit_pos_enc = self.positional_augmenter_vit_dec(slots.flatten(2, 3).repeat((1, 1, 196)).reshape(-1, self.n_dim, 14, 14)).flatten(2, 3)
-        # decoded_features, vit_masks =self.vit_decoder_mlp(slots_with_vit_pos_enc).reshape(batch, -1, vit_res_num, vit_res_num, 385).split([384, 1], dim=-1)
+        # slots_with_vit_pos_enc = self.positional_augmenter_vit_dec(slots_grid.flatten(2, 3).repeat((1, 1, 196)).reshape(-1, self.n_dim, self.lat_dim, self.lat_dim)).flatten(2, 3)
+        # decoded_features, vit_masks =self.vit_decoder_mlp(slots_with_vit_pos_enc).reshape(batch, -1, self.vit_patch_num, self.vit_patch_num, self.vit_feat+1).split([self.vit_feat, 1], dim=-1)
 
-        decoded_features, vit_masks = self.vit_decoder(slots).permute(0, 2, 3, 1).reshape(batch, -1, vit_res_num, vit_res_num, 385).split([384, 1], dim=-1)
+        decoded_features, vit_masks = self.vit_decoder(slots_grid).permute(0, 2, 3, 1).reshape(batch, -1, self.vit_patch_num, self.vit_patch_num, self.vit_feat+1).split([self.vit_feat, 1], dim=-1)
         vit_mask = F.softmax(vit_masks, dim=1)
 
         rec_features = (decoded_features * vit_mask).sum(dim=1)
 
-        slots = slots.repeat((1, 1, self.lat_dim, self.lat_dim)) # -> batch*num_slots D sqrt(D) sqrt(D)
-        slots_with_pos_enc = self.positional_augmenter_dec(slots)
+        slots_grid = slots_grid.repeat((1, 1, 8, 8)) # -> batch*num_slots D sqrt(D) sqrt(D)
+        slots_with_pos_enc = self.positional_augmenter_dec(slots_grid)
 
         decoded_imgs, masks = self.img_decoder(slots_with_pos_enc).permute(0, 2, 3, 1).reshape(batch, -1, *(np.array(X.shape[2:])//2), 4).split([3, 1], dim=-1)
         img_mask = F.softmax(masks, dim=1)
 
         decoded_imgs = decoded_imgs * img_mask
         rec_img = torch.sum(decoded_imgs, dim=1)
-        return rec_img.permute(0, 3, 1, 2), decoded_imgs.permute(0, 1, 4, 2, 3), F.mse_loss(rec_features.permute(0, 3, 1, 2), vit_features), vit_mask
+        return {
+            'rec_img': rec_img.permute(0, 3, 1, 2),
+            'img_per_slot': decoded_imgs.permute(0, 1, 4, 2, 3),
+            'vit_mask': vit_mask,
+            'vit_rec_loss': F.mse_loss(rec_features.permute(0, 3, 1, 2), vit_features),
+            'slots': slots
+        }
 
 if __name__ == '__main__':
     device = 'cuda'
-    debug = False
+    debug = True
     ToTensor = tv.transforms.Compose([tv.transforms.ToTensor(),
                                       tv.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
-                                      tv.transforms.Resize(224, antialias=True),
                                     ])
+
     train_data = tv.datasets.ImageFolder('~/rl_sandbox/crafter_data/', transform=ToTensor)
     if debug:
         train_data_loader = torch.utils.data.DataLoader(train_data,
@@ -224,7 +232,8 @@ if __name__ == '__main__':
     pbar = tqdm(total=total_steps, desc='Training')
     while global_step < total_steps:
         for sample_num, (img, target) in enumerate(train_data_loader):
-            recovered_img, _, vit_rec_loss, _ = model(img.to(device))
+            res = model(img.to(device))
+            recovered_img, vit_rec_loss = res['rec_img'], res['vit_rec_loss']
 
             reg_loss = F.mse_loss(img.to(device)[:, :, ::2, ::2], recovered_img)
 
@@ -252,8 +261,9 @@ if __name__ == '__main__':
 
         for i in range(3):
             img, target = next(iter(train_data_loader))
-            recovered_img, imgs_per_slot, _, vit_mask = model(img.to(device))
-            upscale = tv.transforms.Resize(224, antialias=True)
+            res = model(img.to(device))
+            recovered_img, imgs_per_slot, vit_mask = res['rec_img'], res['img_per_slot'], res['vit_mask']
+            upscale = tv.transforms.Resize(64, antialias=True)
             unnormalize = tv.transforms.Compose([
                 tv.transforms.Normalize((0, 0, 0), (1/0.229, 1/0.224, 1/0.225)),
                 tv.transforms.Normalize((-0.485, -0.456, -0.406), (1., 1., 1.))
