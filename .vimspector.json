@@ -46,7 +46,7 @@
     "Run dino": {
       "extends": "python-base",
       "configuration": {
-        "program": "rl_sandbox/vision/my_slot_attention.py",
+        "program": "rl_sandbox/vision/slot_attention.py",
         "args": []
       }
     }

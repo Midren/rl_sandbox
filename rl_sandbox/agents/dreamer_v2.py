@@ -21,7 +21,7 @@ from rl_sandbox.utils.replay_buffer import (Action, Actions, Observation,
                                             TerminationFlags, IsFirstFlags)
 from rl_sandbox.utils.schedulers import LinearScheduler
 from rl_sandbox.utils.dists import DistLayer
-from rl_sandbox.vision.my_slot_attention import SlotAttention, PositionalEmbedding
+from rl_sandbox.vision.slot_attention import SlotAttention, PositionalEmbedding
 
 class View(nn.Module):
 
