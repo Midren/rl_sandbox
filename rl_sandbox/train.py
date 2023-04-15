@@ -56,6 +56,7 @@ def main(cfg: DictConfig):
 
     # TODO: Implement smarter techniques for exploration
     #       (Plan2Explore, etc)
+    print(f'Start run: {cfg.logger.message}')
     logger = Logger(**cfg.logger)
 
     env: Env = hydra.utils.instantiate(cfg.env)

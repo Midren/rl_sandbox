@@ -390,7 +390,8 @@ class ViTDecoder(nn.Module):
 
     # def __init__(self, input_size, norm_layer: nn.GroupNorm | nn.Identity, kernel_sizes=[5, 5, 5, 3, 5, 3]):
     # def __init__(self, input_size, norm_layer: nn.GroupNorm | nn.Identity, kernel_sizes=[5, 5, 5, 5, 3]):
-    def __init__(self, input_size, norm_layer: nn.GroupNorm | nn.Identity, kernel_sizes=[5, 5, 5, 3, 3]):
+    # def __init__(self, input_size, norm_layer: nn.GroupNorm | nn.Identity, kernel_sizes=[5, 5, 5, 3, 3]):
+    def __init__(self, input_size, norm_layer: nn.GroupNorm | nn.Identity, kernel_sizes=[5, 5, 5, 3]):
         super().__init__()
         layers = []
         self.channel_step = 12
@@ -463,8 +464,8 @@ class WorldModel(nn.Module):
                                     norm_layer=nn.Identity if layer_norm else nn.LayerNorm)
         if encode_vit or decode_vit:
             # self.dino_vit = ViTFeat("/dino/dino_vitbase8_pretrain/dino_vitbase8_pretrain.pth", feat_dim=768, vit_arch='base', patch_size=8)
-            # self.dino_vit = ViTFeat("/dino/dino_deitsmall8_pretrain/dino_deitsmall8_pretrain.pth", feat_dim=384, vit_arch='small', patch_size=8)
-            self.dino_vit = ViTFeat("/dino/dino_deitsmall16_pretrain/dino_deitsmall16_pretrain.pth", feat_dim=384, vit_arch='small', patch_size=16)
+            self.dino_vit = ViTFeat("/dino/dino_deitsmall8_pretrain/dino_deitsmall8_pretrain.pth", feat_dim=384, vit_arch='small', patch_size=8)
+            # self.dino_vit = ViTFeat("/dino/dino_deitsmall16_pretrain/dino_deitsmall16_pretrain.pth", feat_dim=384, vit_arch='small', patch_size=16)
             self.vit_feat_dim = self.dino_vit.feat_dim
             self.vit_num_patches = self.dino_vit.model.patch_embed.num_patches
             self.dino_vit.requires_grad_(False)
@@ -552,12 +553,16 @@ class WorldModel(nn.Module):
         losses = {}
         metrics = {}
 
-        def KL(dist1, dist2):
+        def KL(dist1, dist2, free_nat = True):
             KL_ = torch.distributions.kl_divergence
-            kl_lhs = KL_(td.OneHotCategoricalStraightThrough(logits=dist2.detach()), td.OneHotCategoricalStraightThrough(logits=dist1)).mean()
-            kl_rhs = KL_(td.OneHotCategoricalStraightThrough(logits=dist2), td.OneHotCategoricalStraightThrough(logits=dist1.detach())).mean()
-            kl_lhs = torch.maximum(kl_lhs, self.kl_free_nats)
-            kl_rhs = torch.maximum(kl_rhs, self.kl_free_nats)
+            one = self.kl_free_nats * torch.ones(1, device=next(self.parameters()).device)
+            # TODO: kl_free_avg is used always
+            if free_nat:
+                kl_lhs = torch.maximum(KL_(Dist(dist2.detach()), Dist(dist1)).mean(), one)
+                kl_rhs = torch.maximum(KL_(Dist(dist2), Dist(dist1.detach())).mean(), one)
+            else:
+                kl_lhs = KL_(Dist(dist2.detach()), Dist(dist1)).mean()
+                kl_rhs = KL_(Dist(dist2), Dist(dist1.detach())).mean()
             return (self.kl_beta * (self.alpha * kl_lhs + (1 - self.alpha) * kl_rhs))
 
         priors = []
@@ -566,11 +571,11 @@ class WorldModel(nn.Module):
         if self.decode_vit:
             inp = obs
             if not self.encode_vit:
-                ToTensor = tv.transforms.Compose([tv.transforms.Normalize((0.485, 0.456, 0.406),
-                                                       (0.229, 0.224, 0.225)),
-                                                  tv.transforms.Resize(224, antialias=True)])
-                # ToTensor = tv.transforms.Normalize((0.485, 0.456, 0.406),
-                #                                        (0.229, 0.224, 0.225))
+                # ToTensor = tv.transforms.Compose([tv.transforms.Normalize((0.485, 0.456, 0.406),
+                #                                        (0.229, 0.224, 0.225)),
+                #                                   tv.transforms.Resize(224, antialias=True)])
+                ToTensor = tv.transforms.Normalize((0.485, 0.456, 0.406),
+                                                       (0.229, 0.224, 0.225))
                 inp = ToTensor(obs + 0.5)
             d_features = self.dino_vit(inp)
 
@@ -608,8 +613,10 @@ class WorldModel(nn.Module):
                 x_r_detached = self.image_predictor(posterior.combined.transpose(0, 1).flatten(0, 1).detach())
                 losses['loss_reconstruction_img'] = -x_r_detached.log_prob(obs).float().mean()
             d_pred = self.dino_predictor(posterior.combined.transpose(0, 1).flatten(0, 1))
-            losses['loss_reconstruction'] = (self.vit_l2_ratio * -d_pred.log_prob(d_features.reshape(b, self.vit_feat_dim, 14, 14)).float().mean()/4 +
+            losses['loss_reconstruction'] = (self.vit_l2_ratio * -d_pred.log_prob(d_features.reshape(b, self.vit_feat_dim, 8, 8)).float().mean() +
                                             (1-self.vit_l2_ratio) * img_rec)
+            # losses['loss_reconstruction'] = (self.vit_l2_ratio * -d_pred.log_prob(d_features.flatten(1, 2)).float().mean() +
+            #                                 (1-self.vit_l2_ratio) * img_rec)
 
         prior_logits = prior.stoch_logits
         posterior_logits = posterior.stoch_logits
@@ -909,8 +916,8 @@ class DreamerV2(RlAgent):
         else:
             # log mean +- std
             pass
-        logger.add_image('val/latent_probs', latent_hist, epoch_num)
-        logger.add_image('val/latent_probs_sorted', np.sort(latent_hist, axis=1), epoch_num)
+        logger.add_image('val/latent_probs', latent_hist, epoch_num, dataformats='HW')
+        logger.add_image('val/latent_probs_sorted', np.sort(latent_hist, axis=1), epoch_num, dataformats='HW')
         logger.add_video('val/dreamed_rollout', videos_comparison, epoch_num)
 
         rewards_err = torch.Tensor([torch.abs(sum(imagined_rewards[i]) - real_rewards[i].sum()) for i in range(len(imagined_rewards))]).mean()
@@ -934,7 +941,7 @@ class DreamerV2(RlAgent):
         first_flags = self.from_np(is_first).type(torch.float32)
 
         # take some latent embeddings as initial
-        with torch.cuda.amp.autocast(enabled=True):
+        with torch.cuda.amp.autocast(enabled=False):
             losses, discovered_states, wm_metrics = self.world_model.calculate_loss(obs, a, r, discount_factors, first_flags)
             self.world_model.recurrent_model.discretizer_scheduler.step()
 
@@ -961,9 +968,9 @@ class DreamerV2(RlAgent):
         nn.utils.clip_grad_norm_(self.world_model.parameters(), 100)
         self.scaler.step(self.world_model_optimizer)
 
-        metrics = {}
+        metrics = wm_metrics
 
-        with torch.cuda.amp.autocast(enabled=True):
+        with torch.cuda.amp.autocast(enabled=False):
             losses_ac = {}
             initial_states = State(discovered_states.determ.flatten(0, 1).unsqueeze(0).detach(),
                                    discovered_states.stoch_logits.flatten(0, 1).unsqueeze(0).detach(),

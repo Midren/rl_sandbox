@@ -50,8 +50,8 @@ class Logger:
     def add_scalar(self, name: str, value: t.Any, global_step: int):
         self.writer.add_scalar(name, value, global_step)
 
-    def add_image(self, name: str, image: t.Any, global_step: int):
-        self.writer.add_image(name, image, global_step)
+    def add_image(self, name: str, image: t.Any, global_step: int, dataformats='CHW'):
+        self.writer.add_image(name, image, global_step, dataformats=dataformats)
 
     def add_video(self, name: str, video: t.Any, global_step: int):
         self.writer.add_video(name, video, global_step, fps=20)
