@@ -131,7 +131,7 @@ class Attention(nn.Module):
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
-        return x, qkv, attn
+        return x, attn
 
 
 class Block(nn.Module):
@@ -147,9 +147,9 @@ class Block(nn.Module):
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
     def forward(self, x, return_attention=False):
-        y, qkv, attn = self.attn(self.norm1(x))
+        y, attn = self.attn(self.norm1(x))
         if return_attention:
-            return qkv, attn
+            return attn
         x = x + self.drop_path(y)
         x = x + self.drop_path(self.mlp(self.norm2(x)))
         return x
@@ -319,17 +319,17 @@ class ViTFeat(nn.Module):
         def hook_fn_forward_qkv(module, input, output):
             feat_out["qkv"] = output
 
-        # self.model._modules["blocks"][-1]._modules["attn"]._modules["qkv"].register_forward_hook(hook_fn_forward_qkv)
+        self.model._modules["blocks"][-1]._modules["attn"]._modules["qkv"].register_forward_hook(hook_fn_forward_qkv)
 
 
         # Forward pass in the model
         with torch.no_grad() :
             h, w = img.shape[2], img.shape[3]
             feat_h, feat_w = h // self.patch_size, w // self.patch_size
-            qkv, attentions = self.model.get_last_selfattention(img)
+            attentions = self.model.get_last_selfattention(img)
             bs, nb_head, nb_token = attentions.shape[0], attentions.shape[1], attentions.shape[2]
             qkv = (
-                    qkv
+                    feat_out["qkv"]
                     .reshape(bs, nb_token, 3, nb_head, -1)
                     .permute(2, 0, 3, 1, 4)
                 )

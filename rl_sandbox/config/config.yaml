@@ -1,6 +1,6 @@
 defaults:
   - agent: dreamer_v2
-  - env: dm_acrobot
+  - env: dm_cartpole
   - training: dm
   - _self_
 
@@ -8,20 +8,26 @@ seed: 42
 device_type: cuda
 
 logger:
-  type: tensorboard
-  message: Acrobot reference with 1 nat
+  type: null
+  message: Cartpole with only 1 slot without KL
+  #message: test_last
   log_grads: false
 
 training:
   checkpoint_path: null
-  steps: 1.5e6
-  batch_size: 50
-  val_logs_every: 2e4
+  steps: 1e6
+  #prefill: 0
+  pretrain: 0
+  batch_size: 16
+  val_logs_every: 2.5e3
 
 
 validation:
   rollout_num: 5
   visualize: true
+
+#agents:
+#  batch_cluster_size: 10
 
 debug:
   profiler: false

@@ -112,13 +112,13 @@ class SlottedAutoEncoder(nn.Module):
         self.positional_augmenter_vit_dec = PositionalEmbedding(self.n_dim, (self.lat_dim, self.lat_dim))
         self.slot_attention = SlotAttention(num_slots, self.n_dim, n_iter)
         self.img_decoder = nn.Sequential( # Dx8x8 -> (3+1)x64x64
-            nn.ConvTranspose2d(self.n_dim, 64, kernel_size=5, stride=(2, 2), padding=2, output_padding=1),
+            nn.ConvTranspose2d(self.n_dim, 48, kernel_size=5, stride=(2, 2), padding=2, output_padding=1),
             nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(64, 64, kernel_size=5, stride=(2, 2), padding=2, output_padding=1),
+            nn.ConvTranspose2d(48, 96, kernel_size=5, stride=(2, 2), padding=2, output_padding=1),
             nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(64, 64, kernel_size=5, stride=(2, 2), padding=2, output_padding=1),
+            nn.ConvTranspose2d(96, 192, kernel_size=5, stride=(2, 2), padding=2, output_padding=1),
+            nn.ConvTranspose2d(192, 4, kernel_size=3, stride=(1, 1), padding=1),
             nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(64, 4, kernel_size=3, stride=(1, 1), padding=1),
         )
 
         self.vit_decoder = nn.Sequential( # Dx1x1 -> (384+1)x14x14
@@ -170,7 +170,7 @@ class SlottedAutoEncoder(nn.Module):
         slots_grid = slots_grid.repeat((1, 1, 8, 8)) # -> batch*num_slots D sqrt(D) sqrt(D)
         slots_with_pos_enc = self.positional_augmenter_dec(slots_grid)
 
-        decoded_imgs, masks = self.img_decoder(slots_with_pos_enc).permute(0, 2, 3, 1).reshape(batch, -1, *(np.array(X.shape[2:])//2), 4).split([3, 1], dim=-1)
+        decoded_imgs, masks = self.img_decoder(slots_with_pos_enc).permute(0, 2, 3, 1).reshape(batch, -1, *np.array(X.shape[2:]), 4).split([3, 1], dim=-1)
         img_mask = F.softmax(masks, dim=1)
 
         decoded_imgs = decoded_imgs * img_mask
@@ -185,7 +185,7 @@ class SlottedAutoEncoder(nn.Module):
 
 if __name__ == '__main__':
     device = 'cuda'
-    debug = True
+    debug = False
     ToTensor = tv.transforms.Compose([tv.transforms.ToTensor(),
                                       tv.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
                                     ])
@@ -235,7 +235,7 @@ if __name__ == '__main__':
             res = model(img.to(device))
             recovered_img, vit_rec_loss = res['rec_img'], res['vit_rec_loss']
 
-            reg_loss = F.mse_loss(img.to(device)[:, :, ::2, ::2], recovered_img)
+            reg_loss = F.mse_loss(img.to(device), recovered_img)
 
             lambda_ = 0.1
             loss = lambda_ * reg_loss + (1 - lambda_) * vit_rec_loss

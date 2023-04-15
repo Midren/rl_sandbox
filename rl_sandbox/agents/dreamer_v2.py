@@ -19,8 +19,9 @@ from rl_sandbox.utils.fc_nn import fc_nn_generator
 from rl_sandbox.utils.replay_buffer import (Action, Actions, Observation,
                                             Observations, Rewards,
                                             TerminationFlags, IsFirstFlags)
-from rl_sandbox.utils.dists import TruncatedNormal
 from rl_sandbox.utils.schedulers import LinearScheduler
+from rl_sandbox.utils.dists import DistLayer
+from rl_sandbox.vision.my_slot_attention import SlotAttention, PositionalEmbedding
 
 class View(nn.Module):
 
@@ -31,96 +32,27 @@ class View(nn.Module):
     def forward(self, x):
         return x.view(*self.shape)
 
-
-class Sigmoid2(nn.Module):
-    def forward(self, x):
-        return 2*torch.sigmoid(x/2)
-
-class NormalWithOffset(nn.Module):
-    def __init__(self, min_std: float, std_trans: str = 'sigmoid2', transform: t.Optional[str] = None):
-        super().__init__()
-        self.min_std = min_std
-        match std_trans:
-            case 'identity':
-                self.std_trans = nn.Identity()
-            case 'softplus':
-                self.std_trans = nn.Softplus()
-            case 'sigmoid':
-                self.std_trans = nn.Sigmoid()
-            case 'sigmoid2':
-                self.std_trans = Sigmoid2()
-            case _:
-                raise RuntimeError("Unknown std transformation")
-
-        match transform:
-            case 'tanh':
-                self.trans = [td.TanhTransform(cache_size=1)]
-            case None:
-                self.trans = None
-            case _:
-                raise RuntimeError("Unknown distribution transformation")
-
-    def forward(self, x):
-        mean, std = x.chunk(2, dim=-1)
-        dist = td.Normal(mean, self.std_trans(std) + self.min_std)
-        if self.trans is None:
-            return dist
-        else:
-            return td.TransformedDistribution(dist, self.trans)
-
-class DistLayer(nn.Module):
-    def __init__(self, type: str):
-        super().__init__()
-        self._dist = type
-        match type:
-            case 'mse':
-                self.dist = lambda x: td.Normal(x.float(), 1.0)
-            case 'normal':
-                self.dist = NormalWithOffset(min_std=0.1)
-            case 'onehot':
-                # Forcing float32 on AMP
-                self.dist = lambda x: td.OneHotCategoricalStraightThrough(logits=x.float())
-            case 'normal_tanh':
-                def get_tanh_normal(x, min_std=0.1):
-                    mean, std = x.chunk(2, dim=-1)
-                    init_std = np.log(np.exp(5) - 1)
-                    raise NotImplementedError()
-                    # return TanhNormal(torch.clamp(mean, -9.0, 9.0).float(), (F.softplus(std + init_std) + min_std).float(), upscale=5)
-                self.dist = get_tanh_normal
-            case 'normal_trunc':
-                def get_trunc_normal(x, min_std=0.1):
-                    mean, std = x.chunk(2, dim=-1)
-                    return TruncatedNormal(loc=torch.tanh(mean).float(), scale=(2*torch.sigmoid(std/2) + min_std).float(), a=-1, b=1)
-                self.dist = get_trunc_normal
-            case 'binary':
-                self.dist = lambda x: td.Bernoulli(logits=x)
-            case _:
-                raise RuntimeError("Invalid dist layer")
-
-    def forward(self, x):
-        match self._dist:
-            case 'onehot':
-                return self.dist(x)
-            case _:
-                return td.Independent(self.dist(x), 1)
-
 def Dist(val):
     return DistLayer('onehot')(val)
 
 @dataclass
 class State:
-    determ: Float[torch.Tensor, 'seq batch determ']
-    stoch_logits: Float[torch.Tensor, 'seq batch latent_classes latent_dim']
-    stoch_: t.Optional[Bool[torch.Tensor, 'seq batch stoch_dim']] = None
+    determ: Float[torch.Tensor, 'seq batch num_slots determ']
+    stoch_logits: Float[torch.Tensor, 'seq batch num_slots latent_classes latent_dim']
+    stoch_: t.Optional[Bool[torch.Tensor, 'seq batch num_slots stoch_dim']] = None
 
     @property
     def combined(self):
+        return torch.concat([self.determ, self.stoch], dim=-1).flatten(2, 3)
+
+    @property
+    def combined_slots(self):
         return torch.concat([self.determ, self.stoch], dim=-1)
 
     @property
     def stoch(self):
         if self.stoch_ is None:
-            self.stoch_ = Dist(self.stoch_logits).rsample().reshape(self.stoch_logits.shape[:2] + (-1,))
+            self.stoch_ = Dist(self.stoch_logits).rsample().reshape(self.stoch_logits.shape[:3] + (-1,))
         return self.stoch_
 
     @property
@@ -279,6 +211,7 @@ class RSSM(nn.Module):
         # For observation we do not have ensemble
         # FIXME: very bad magic number
         img_sz = 4 * 384  # 384*2x2
+        # img_sz = 192
         self.stoch_net = nn.Sequential(
             # nn.LayerNorm(hidden_size + img_sz, hidden_size),
             nn.Linear(hidden_size + img_sz, hidden_size), # Dreamer 'obs_out'
@@ -303,24 +236,26 @@ class RSSM(nn.Module):
     def predict_next(self,
                      prev_state: State,
                      action) -> State:
-        x = self.pre_determ_recurrent(torch.concat([prev_state.stoch, action], dim=-1))
+        x = self.pre_determ_recurrent(torch.concat([prev_state.stoch, action.unsqueeze(2).repeat((1, 1, prev_state.determ.shape[2], 1))], dim=-1))
         # NOTE: x and determ are actually the same value if sequence of 1 is inserted
-        x, determ_prior = self.determ_recurrent(x, prev_state.determ)
+        x, determ_prior = self.determ_recurrent(x.flatten(1, 2), prev_state.determ.flatten(1, 2))
         if self.discrete_rssm:
-            determ_post, diff, embed_ind = self.determ_discretizer(determ_prior)
-            determ_post = determ_post.reshape(determ_prior.shape)
-            determ_post = self.determ_layer_norm(determ_post)
-            alpha = self.discretizer_scheduler.val
-            determ_post = alpha * determ_prior + (1-alpha) * determ_post
+            raise NotImplementedError("discrete rssm was not adopted for slot attention")
+            # determ_post, diff, embed_ind = self.determ_discretizer(determ_prior)
+            # determ_post = determ_post.reshape(determ_prior.shape)
+            # determ_post = self.determ_layer_norm(determ_post)
+            # alpha = self.discretizer_scheduler.val
+            # determ_post = alpha * determ_prior + (1-alpha) * determ_post
         else:
             determ_post, diff = determ_prior, 0
 
         # used for KL divergence
         predicted_stoch_logits = self.estimate_stochastic_latent(x)
-        return State(determ_post, predicted_stoch_logits), diff
+        # Size is 1 x B x slots_num x ...
+        return State(determ_post.reshape(prev_state.determ.shape), predicted_stoch_logits.reshape(prev_state.stoch_logits.shape)), diff
 
     def update_current(self, prior: State, embed) -> State: # Dreamer 'obs_out'
-        return State(prior.determ, self.stoch_net(torch.concat([prior.determ, embed], dim=-1)))
+        return State(prior.determ, self.stoch_net(torch.concat([prior.determ, embed], dim=-1)).flatten(1, 2).reshape(prior.stoch_logits.shape))
 
     def forward(self, h_prev: State, embed,
                 action) -> tuple[State, State]:
@@ -338,7 +273,7 @@ class RSSM(nn.Module):
 
 class Encoder(nn.Module):
 
-    def __init__(self, norm_layer: nn.GroupNorm | nn.Identity, kernel_sizes=[4, 4, 4, 4]):
+    def __init__(self, norm_layer: nn.GroupNorm | nn.Identity, kernel_sizes=[4, 4, 4]):
         super().__init__()
         layers = []
 
@@ -350,7 +285,7 @@ class Encoder(nn.Module):
             layers.append(norm_layer(1, out_channels))
             layers.append(nn.ELU(inplace=True))
             in_channels = out_channels
-        layers.append(nn.Flatten())
+        # layers.append(nn.Flatten())
         self.net = nn.Sequential(*layers)
 
     def forward(self, X):
@@ -371,7 +306,7 @@ class Decoder(nn.Module):
             out_channels = 2**(len(kernel_sizes) - i - 2) * self.channel_step
             if i == len(kernel_sizes) - 1:
                 out_channels = 3
-                layers.append(nn.ConvTranspose2d(in_channels, 3, kernel_size=k, stride=2))
+                layers.append(nn.ConvTranspose2d(in_channels, 4, kernel_size=k, stride=2))
             else:
                 layers.append(norm_layer(1, in_channels))
                 layers.append(
@@ -384,7 +319,8 @@ class Decoder(nn.Module):
     def forward(self, X):
         x = self.convin(X)
         x = x.view(-1, 32 * self.channel_step, 1, 1)
-        return td.Independent(td.Normal(self.net(x), 1.0), 3)
+        return self.net(x)
+        # return td.Independent(td.Normal(self.net(x), 1.0), 3)
 
 class ViTDecoder(nn.Module):
 
@@ -439,13 +375,15 @@ class WorldModel(nn.Module):
 
     def __init__(self, img_size, batch_cluster_size, latent_dim, latent_classes, rssm_dim,
                  actions_num, kl_loss_scale, kl_loss_balancing, kl_free_nats, discrete_rssm,
-                 predict_discount, layer_norm: bool, encode_vit: bool, decode_vit: bool, vit_l2_ratio: float):
+                 predict_discount, layer_norm: bool, encode_vit: bool, decode_vit: bool, vit_l2_ratio: float,
+                 slots_num: int):
         super().__init__()
         self.register_buffer('kl_free_nats', kl_free_nats * torch.ones(1))
         self.kl_beta = kl_loss_scale
         self.rssm_dim = rssm_dim
         self.latent_dim = latent_dim
         self.latent_classes = latent_classes
+        self.slots_num = slots_num
         self.cluster_size = batch_cluster_size
         self.actions_num = actions_num
         # kl loss balancing (prior/posterior)
@@ -483,6 +421,17 @@ class WorldModel(nn.Module):
         else:
             self.encoder = Encoder(norm_layer=nn.Identity if layer_norm else nn.GroupNorm)
 
+        self.n_dim = 192
+        self.slot_attention = SlotAttention(slots_num, 1536, 3)
+        self.positional_augmenter_inp = PositionalEmbedding(self.n_dim, (6, 6))
+        # self.positional_augmenter_dec = PositionalEmbedding(self.n_dim, (8, 8))
+
+        self.slot_mlp = nn.Sequential(
+            nn.Linear(192, 768),
+            nn.ReLU(inplace=True),
+            nn.Linear(768, 1536)
+        )
+
 
         if decode_vit:
             self.dino_predictor = ViTDecoder(rssm_dim + latent_dim * latent_classes,
@@ -497,14 +446,14 @@ class WorldModel(nn.Module):
         self.image_predictor = Decoder(rssm_dim + latent_dim * latent_classes,
                                        norm_layer=nn.Identity if layer_norm else nn.GroupNorm)
 
-        self.reward_predictor = fc_nn_generator(rssm_dim + latent_dim * latent_classes,
+        self.reward_predictor = fc_nn_generator(slots_num*(rssm_dim + latent_dim * latent_classes),
                                                 1,
                                                 hidden_size=400,
                                                 num_layers=5,
                                                 intermediate_activation=nn.ELU,
                                                 layer_norm=layer_norm,
                                                 final_activation=DistLayer('mse'))
-        self.discount_predictor = fc_nn_generator(rssm_dim + latent_dim * latent_classes,
+        self.discount_predictor = fc_nn_generator(slots_num*(rssm_dim + latent_dim * latent_classes),
                                                   1,
                                                   hidden_size=400,
                                                   num_layers=5,
@@ -515,9 +464,9 @@ class WorldModel(nn.Module):
 
     def get_initial_state(self, batch_size: int = 1, seq_size: int = 1):
         device = next(self.parameters()).device
-        return State(torch.zeros(seq_size, batch_size, self.rssm_dim, device=device),
-                            torch.zeros(seq_size, batch_size, self.latent_classes, self.latent_dim, device=device),
-                            torch.zeros(seq_size, batch_size, self.latent_classes * self.latent_dim, device=device))
+        return State(torch.zeros(seq_size, batch_size, self.slots_num, self.rssm_dim, device=device),
+                            torch.zeros(seq_size, batch_size, self.slots_num, self.latent_classes, self.latent_dim, device=device),
+                            torch.zeros(seq_size, batch_size, self.slots_num, self.latent_classes * self.latent_dim, device=device))
 
     def predict_next(self, prev_state: State, action):
         prior, _ = self.recurrent_model.predict_next(prev_state, action)
@@ -529,20 +478,29 @@ class WorldModel(nn.Module):
             discount_factors = torch.ones_like(reward)
         return prior, reward, discount_factors
 
-    def get_latent(self, obs: torch.Tensor, action, state: t.Optional[State]) -> State:
+    def get_latent(self, obs: torch.Tensor, action, state: t.Optional[State], prev_slots: t.Optional[torch.Tensor]) -> t.Tuple[State, torch.Tensor]:
         if state is None:
             state = self.get_initial_state()
         embed = self.encoder(obs.unsqueeze(0))
-        _, posterior, _ = self.recurrent_model.forward(state, embed.unsqueeze(0),
-                                                           action)
-        return posterior
+        embed_with_pos_enc = self.positional_augmenter_inp(embed)
+
+        pre_slot_features_t = self.slot_mlp(embed_with_pos_enc.permute(0, 2, 3, 1).reshape(1, -1, self.n_dim))
+
+        slots_t = self.slot_attention(pre_slot_features_t, prev_slots)
+
+        _, posterior, _ = self.recurrent_model.forward(state, slots_t.unsqueeze(0), action)
+        return posterior, None
 
     def calculate_loss(self, obs: torch.Tensor, a: torch.Tensor, r: torch.Tensor,
                        discount: torch.Tensor, first: torch.Tensor):
         b, _, h, w = obs.shape  # s <- BxHxWx3
 
         embed = self.encoder(obs)
-        embed_c = embed.reshape(b // self.cluster_size, self.cluster_size, -1)
+        embed_with_pos_enc = self.positional_augmenter_inp(embed)
+        # embed_c = embed.reshape(b // self.cluster_size, self.cluster_size, -1)
+
+        pre_slot_features = self.slot_mlp(embed_with_pos_enc.permute(0, 2, 3, 1).reshape(b, -1, self.n_dim))
+        pre_slot_features_c = pre_slot_features.reshape(b // self.cluster_size, self.cluster_size, -1, 1536)
 
         a_c = a.reshape(-1, self.cluster_size, self.actions_num)
         r_c = r.reshape(-1, self.cluster_size, 1)
@@ -575,12 +533,16 @@ class WorldModel(nn.Module):
             d_features = self.dino_vit(inp)
 
         prev_state = self.get_initial_state(b // self.cluster_size)
+        prev_slots = None
         for t in range(self.cluster_size):
             # s_t <- 1xB^xHxWx3
-            embed_t, a_t, first_t = embed_c[:, t].unsqueeze(0), a_c[:, t].unsqueeze(0), first_c[:, t].unsqueeze(0)
+            pre_slot_feature_t, a_t, first_t = pre_slot_features_c[:, t], a_c[:, t].unsqueeze(0), first_c[:, t].unsqueeze(0)
             a_t = a_t * (1 - first_t)
 
-            prior, posterior, diff = self.recurrent_model.forward(prev_state, embed_t, a_t)
+            slots_t = self.slot_attention(pre_slot_feature_t, prev_slots)
+            prev_slots = None
+
+            prior, posterior, diff = self.recurrent_model.forward(prev_state, slots_t.unsqueeze(0), a_t)
             prev_state = posterior
 
             priors.append(prior)
@@ -597,19 +559,24 @@ class WorldModel(nn.Module):
         losses['loss_reconstruction_img'] = torch.Tensor([0]).to(obs.device)
 
         if not self.decode_vit:
-            x_r = self.image_predictor(posterior.combined.transpose(0, 1).flatten(0, 1))
+            decoded_imgs, masks = self.image_predictor(posterior.combined_slots.transpose(0, 1).flatten(0, 1)).reshape(b, -1, 4, h, w).split([3, 1], dim=2)
+            img_mask = F.softmax(masks, dim=1)
+            decoded_imgs = decoded_imgs * img_mask
+            x_r = td.Independent(td.Normal(torch.sum(decoded_imgs, dim=1), 1.0), 3)
+
             losses['loss_reconstruction'] = -x_r.log_prob(obs).float().mean()
         else:
-            if self.vit_l2_ratio != 1.0:
-                x_r = self.image_predictor(posterior.combined.transpose(0, 1).flatten(0, 1))
-                img_rec = -x_r.log_prob(obs).float().mean()
-            else:
-                img_rec = 0
-                x_r_detached = self.image_predictor(posterior.combined.transpose(0, 1).flatten(0, 1).detach())
-                losses['loss_reconstruction_img'] = -x_r_detached.log_prob(obs).float().mean()
-            d_pred = self.dino_predictor(posterior.combined.transpose(0, 1).flatten(0, 1))
-            losses['loss_reconstruction'] = (self.vit_l2_ratio * -d_pred.log_prob(d_features.reshape(b, self.vit_feat_dim, 14, 14)).float().mean()/4 +
-                                            (1-self.vit_l2_ratio) * img_rec)
+            raise NotImplementedError("")
+            # if self.vit_l2_ratio != 1.0:
+            #     x_r = self.image_predictor(posterior.combined_slots.transpose(0, 1).flatten(0, 1))
+            #     img_rec = -x_r.log_prob(obs).float().mean()
+            # else:
+            #     img_rec = 0
+            #     x_r_detached = self.image_predictor(posterior.combined_slots.transpose(0, 1).flatten(0, 1).detach())
+            #     losses['loss_reconstruction_img'] = -x_r_detached.log_prob(obs).float().mean()
+            # d_pred = self.dino_predictor(posterior.combined_slots.transpose(0, 1).flatten(0, 1))
+            # losses['loss_reconstruction'] = (self.vit_l2_ratio * -d_pred.log_prob(d_features.reshape(b, self.vit_feat_dim, 14, 14)).float().mean()/4 +
+            #                                 (1-self.vit_l2_ratio) * img_rec)
 
         prior_logits = prior.stoch_logits
         posterior_logits = posterior.stoch_logits
@@ -714,6 +681,7 @@ class DreamerV2(RlAgent):
             encode_vit: bool,
             decode_vit: bool,
             vit_l2_ratio: float,
+            slots_num: int,
             device_type: str = 'cpu',
             logger = None):
 
@@ -733,9 +701,9 @@ class DreamerV2(RlAgent):
                                       kl_loss_balancing, kl_loss_free_nats,
                                       discrete_rssm,
                                       world_model_predict_discount, layer_norm,
-                                      encode_vit, decode_vit, vit_l2_ratio).to(device_type)
+                                      encode_vit, decode_vit, vit_l2_ratio, slots_num).to(device_type)
 
-        self.actor = fc_nn_generator(rssm_dim + latent_dim * latent_classes,
+        self.actor = fc_nn_generator(slots_num*(rssm_dim + latent_dim * latent_classes),
                                      actions_num if self.is_discrete else actions_num * 2,
                                      400,
                                      5,
@@ -746,7 +714,7 @@ class DreamerV2(RlAgent):
         self.critic = ImaginativeCritic(discount_factor, critic_update_interval,
                                         critic_soft_update_fraction,
                                         critic_value_target_lambda,
-                                        rssm_dim + latent_dim * latent_classes,
+                                        slots_num*(rssm_dim + latent_dim * latent_classes),
                                         layer_norm=layer_norm).to(device_type)
 
         self.scaler = torch.cuda.amp.GradScaler()
@@ -754,10 +722,20 @@ class DreamerV2(RlAgent):
                                                            lr=world_model_lr,
                                                            eps=1e-5,
                                                            weight_decay=1e-6)
+
         self.world_model_optimizer = torch.optim.AdamW(self.world_model.parameters(),
                                                        lr=world_model_lr,
                                                        eps=1e-5,
                                                        weight_decay=1e-6)
+
+        warmup_steps = 1e4
+        decay_rate = 0.5
+        decay_steps = 5e5
+        lr_warmup_scheduler = torch.optim.lr_scheduler.LinearLR(self.world_model_optimizer, start_factor=1/warmup_steps, total_iters=int(warmup_steps))
+        lr_decay_scheduler = torch.optim.lr_scheduler.LambdaLR(self.world_model_optimizer, lambda epoch: decay_rate**(epoch/decay_steps))
+        # lr_decay_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=decay_rate**(1/decay_steps))
+        self.lr_scheduler = torch.optim.lr_scheduler.ChainedScheduler([lr_warmup_scheduler, lr_decay_scheduler])
+
         self.actor_optimizer = torch.optim.AdamW(self.actor.parameters(),
                                                  lr=actor_lr,
                                                  eps=1e-5,
@@ -800,8 +778,9 @@ class DreamerV2(RlAgent):
 
     def reset(self):
         self._state = self.world_model.get_initial_state()
+        self._prev_slots = None
         self._last_action = torch.zeros((1, 1, self.actions_num), device=self.device)
-        self._latent_probs = torch.zeros((32, 32), device=self.device)
+        self._latent_probs = torch.zeros((self.world_model.latent_classes, self.world_model.latent_dim), device=self.device)
         self._action_probs = torch.zeros((self.actions_num), device=self.device)
         self._stored_steps = 0
 
@@ -820,17 +799,18 @@ class DreamerV2(RlAgent):
 
     def get_action(self, obs: Observation) -> Action:
         # NOTE: pytorch fails without .copy() only when get_action is called
+        # FIXME: return back action selection
         obs = torch.from_numpy(obs.copy()).to(self.device)
         obs = self.preprocess_obs(obs)
 
-        self._state = self.world_model.get_latent(obs, self._last_action, self._state)
+        self._state, self._prev_slots = self.world_model.get_latent(obs, self._last_action, self._state, self._prev_slots)
 
         actor_dist = self.actor(self._state.combined)
         self._last_action = actor_dist.sample()
 
         if self.is_discrete:
-            self._action_probs += actor_dist.probs.squeeze()
-        self._latent_probs += self._state.stoch_dist.probs.squeeze()
+            self._action_probs += actor_dist.probs.squeeze().mean(dim=0)
+        self._latent_probs += self._state.stoch_dist.probs.squeeze().mean(dim=0)
         self._stored_steps += 1
 
         if self.is_discrete:
@@ -845,9 +825,11 @@ class DreamerV2(RlAgent):
         if self.is_discrete:
             actions = F.one_hot(actions.to(torch.int64), num_classes=self.actions_num).squeeze()
         video = []
+        slots_video = []
         rews = []
 
         state = None
+        prev_slots = None
         means = np.array([0.485, 0.456, 0.406])
         stds = np.array([0.229, 0.224, 0.225])
         UnNormalize = tv.transforms.Normalize(list(-means/stds),
@@ -855,28 +837,43 @@ class DreamerV2(RlAgent):
         for idx, (o, a) in enumerate(list(zip(obs, actions))):
             if idx > update_num:
                 break
-            state = self.world_model.get_latent(o, a.unsqueeze(0).unsqueeze(0), state)
-            video_r = self.world_model.image_predictor(state.combined).mode.cpu().detach().numpy()
+            state, prev_slots = self.world_model.get_latent(o, a.unsqueeze(0).unsqueeze(0), state, prev_slots)
+            # video_r = self.world_model.image_predictor(state.combined_slots).mode.cpu().detach().numpy()
+
+            decoded_imgs, masks = self.world_model.image_predictor(state.combined_slots.flatten(0, 1)).reshape(1, -1, 4, 64, 64).split([3, 1], dim=2)
+            # TODO: try the scaling of softmax as in attention
+            img_mask = F.softmax(masks, dim=1)
+            decoded_imgs = decoded_imgs * img_mask
+            video_r = torch.sum(decoded_imgs, dim=1).cpu().detach().numpy()
+
             rews.append(self.world_model.reward_predictor(state.combined).mode.item())
             if self.world_model.encode_vit:
                 video_r = UnNormalize(torch.from_numpy(video_r)).numpy()
             else:
                 video_r = (video_r + 0.5)
             video.append(video_r)
+            slots_video.append(decoded_imgs.cpu().detach().numpy() + 0.5)
 
         rews = torch.Tensor(rews).to(obs.device)
 
         if update_num < len(obs):
             states, _, rews_2, _ = self.imagine_trajectory(state, actions[update_num+1:].unsqueeze(1), horizon=self.imagination_horizon - 1 - update_num)
             rews = torch.cat([rews, rews_2[1:].squeeze()])
-            video_r = self.world_model.image_predictor(states.combined[1:]).mode.cpu().detach().numpy()
+
+            # video_r = self.world_model.image_predictor(states.combined_slots[1:]).mode.cpu().detach().numpy()
+            decoded_imgs, masks = self.world_model.image_predictor(states.combined_slots[1:].flatten(0, 1)).reshape(-1, self.world_model.slots_num, 4, 64, 64).split([3, 1], dim=2)
+            img_mask = F.softmax(masks, dim=1)
+            decoded_imgs = decoded_imgs * img_mask
+            video_r = torch.sum(decoded_imgs, dim=1).cpu().detach().numpy()
+
             if self.world_model.encode_vit:
                 video_r = UnNormalize(torch.from_numpy(video_r)).numpy()
             else:
                 video_r = (video_r + 0.5)
             video.append(video_r)
+            slots_video.append(decoded_imgs.cpu().detach().numpy() + 0.5)
 
-        return np.concatenate(video), rews
+        return np.concatenate(video), rews, np.concatenate(slots_video)
 
     def viz_log(self, rollout, logger, epoch_num):
         init_indeces = np.random.choice(len(rollout.states) - self.imagination_horizon, 5)
@@ -888,11 +885,15 @@ class DreamerV2(RlAgent):
 
         real_rewards = [rollout.rewards[idx:idx+ self.imagination_horizon] for idx in init_indeces]
 
-        videos_r, imagined_rewards = zip(*[self._generate_video(obs_0.copy(), a_0, update_num=self.imagination_horizon//3) for obs_0, a_0 in zip(
+        videos_r, imagined_rewards, slots_video = zip(*[self._generate_video(obs_0.copy(), a_0, update_num=self.imagination_horizon//3) for obs_0, a_0 in zip(
                 [rollout.next_states[idx:idx+ self.imagination_horizon] for idx in init_indeces],
                 [rollout.actions[idx:idx+ self.imagination_horizon] for idx in init_indeces])
         ])
         videos_r = np.concatenate(videos_r, axis=3)
+
+        slots_video = np.concatenate(list(slots_video)[:3], axis=3)
+        slots_video = slots_video.transpose((0, 2, 3, 1, 4))
+        slots_video = np.expand_dims(slots_video.reshape(*slots_video.shape[:-2], -1), 0)
 
         videos_comparison = np.expand_dims(np.concatenate([videos, videos_r, np.abs(videos - videos_r + 1)/2], axis=2), 0)
         videos_comparison = (videos_comparison * 255.0).astype(np.uint8)
@@ -909,9 +910,10 @@ class DreamerV2(RlAgent):
         else:
             # log mean +- std
             pass
-        logger.add_image('val/latent_probs', latent_hist, epoch_num)
-        logger.add_image('val/latent_probs_sorted', np.sort(latent_hist, axis=1), epoch_num)
+        logger.add_image('val/latent_probs', latent_hist, epoch_num, dataformats='HW')
+        logger.add_image('val/latent_probs_sorted', np.sort(latent_hist, axis=1), epoch_num, dataformats='HW')
         logger.add_video('val/dreamed_rollout', videos_comparison, epoch_num)
+        logger.add_video('val/dreamed_slots', slots_video, epoch_num)
 
         rewards_err = torch.Tensor([torch.abs(sum(imagined_rewards[i]) - real_rewards[i].sum()) for i in range(len(imagined_rewards))]).mean()
         logger.add_scalar('val/img_reward_err', rewards_err.item(), epoch_num)
@@ -958,10 +960,13 @@ class DreamerV2(RlAgent):
 
         # FIXME: clip gradient should be parametrized
         self.scaler.unscale_(self.world_model_optimizer)
+        # for tag, value in self.world_model.named_parameters():
+        #     wm_metrics[f"grad/{tag.replace('.', '/')}"] = value.detach()
         nn.utils.clip_grad_norm_(self.world_model.parameters(), 100)
         self.scaler.step(self.world_model_optimizer)
+        self.lr_scheduler.step()
 
-        metrics = {}
+        metrics = wm_metrics
 
         with torch.cuda.amp.autocast(enabled=True):
             losses_ac = {}
