@@ -1,8 +1,12 @@
 # Taken from https://raw.githubusercontent.com/toshas/torch_truncnorm/main/TruncatedNormal.py
+# Added torch modules on top
 import math
 from numbers import Number
+import typing as t
 
 import torch
+import torch.distributions as td
+from torch import nn
 from torch.distributions import Distribution, constraints
 from torch.distributions.utils import broadcast_all
 
@@ -134,3 +138,78 @@ class TruncatedNormal(TruncatedStandardNormal):
 
     def log_prob(self, value):
         return super(TruncatedNormal, self).log_prob(self._to_std_rv(value)) - self._log_scale
+
+
+class Sigmoid2(nn.Module):
+    def forward(self, x):
+        return 2*torch.sigmoid(x/2)
+
+class NormalWithOffset(nn.Module):
+    def __init__(self, min_std: float, std_trans: str = 'sigmoid2', transform: t.Optional[str] = None):
+        super().__init__()
+        self.min_std = min_std
+        match std_trans:
+            case 'identity':
+                self.std_trans = nn.Identity()
+            case 'softplus':
+                self.std_trans = nn.Softplus()
+            case 'sigmoid':
+                self.std_trans = nn.Sigmoid()
+            case 'sigmoid2':
+                self.std_trans = Sigmoid2()
+            case _:
+                raise RuntimeError("Unknown std transformation")
+
+        match transform:
+            case 'tanh':
+                self.trans = [td.TanhTransform(cache_size=1)]
+            case None:
+                self.trans = None
+            case _:
+                raise RuntimeError("Unknown distribution transformation")
+
+    def forward(self, x):
+        mean, std = x.chunk(2, dim=-1)
+        dist = td.Normal(mean, self.std_trans(std) + self.min_std)
+        if self.trans is None:
+            return dist
+        else:
+            return td.TransformedDistribution(dist, self.trans)
+
+class DistLayer(nn.Module):
+    def __init__(self, type: str):
+        super().__init__()
+        self._dist = type
+        match type:
+            case 'mse':
+                self.dist = lambda x: td.Normal(x.float(), 1.0)
+            case 'normal':
+                self.dist = NormalWithOffset(min_std=0.1)
+            case 'onehot':
+                # Forcing float32 on AMP
+                self.dist = lambda x: td.OneHotCategoricalStraightThrough(logits=x.float())
+            case 'normal_tanh':
+                def get_tanh_normal(x, min_std=0.1):
+                    mean, std = x.chunk(2, dim=-1)
+                    init_std = np.log(np.exp(5) - 1)
+                    raise NotImplementedError()
+                    # return TanhNormal(torch.clamp(mean, -9.0, 9.0).float(), (F.softplus(std + init_std) + min_std).float(), upscale=5)
+                self.dist = get_tanh_normal
+            case 'normal_trunc':
+                def get_trunc_normal(x, min_std=0.1):
+                    mean, std = x.chunk(2, dim=-1)
+                    return TruncatedNormal(loc=torch.tanh(mean).float(), scale=(2*torch.sigmoid(std/2) + min_std).float(), a=-1, b=1)
+                self.dist = get_trunc_normal
+            case 'binary':
+                self.dist = lambda x: td.Bernoulli(logits=x)
+            case _:
+                raise RuntimeError("Invalid dist layer")
+
+    def forward(self, x):
+        match self._dist:
+            case 'onehot':
+                return self.dist(x)
+            case _:
+                # FIXME: verify dimensionality of independent
+                return td.Independent(self.dist(x), 1)
+
