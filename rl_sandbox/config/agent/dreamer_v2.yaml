@@ -2,11 +2,11 @@ _target_: rl_sandbox.agents.DreamerV2
 layer_norm: true
 # World model parameters
 batch_cluster_size: 50
-latent_dim: 32
-latent_classes: 32
-rssm_dim: 200
-slots_num: 1
-kl_loss_scale: 1.0
+latent_dim: 16
+latent_classes: 16
+rssm_dim: 40
+slots_num: 8
+kl_loss_scale: 8.0
 kl_loss_balancing: 0.8
 kl_loss_free_nats: 0.0
 world_model_lr: 3e-4

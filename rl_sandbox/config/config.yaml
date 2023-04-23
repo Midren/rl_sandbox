@@ -8,8 +8,8 @@ seed: 42
 device_type: cuda
 
 logger:
-  type: null
-  message: Cartpole with only 1 slot without KL
+  type: tensorboard
+  message: Cartpole 8 slots, reduced warmup, 192 n_dim, correct prev_slots, 8x KL, 0 nats, 40 rssm dims, 16x16 stoch
   #message: test_last
   log_grads: false
 
@@ -17,9 +17,9 @@ training:
   checkpoint_path: null
   steps: 1e6
   #prefill: 0
-  pretrain: 0
+  #pretrain: 0
   batch_size: 16
-  val_logs_every: 2.5e3
+  val_logs_every: 1e2
 
 
 validation:

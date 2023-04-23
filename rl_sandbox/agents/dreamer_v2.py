@@ -210,8 +210,8 @@ class RSSM(nn.Module):
 
         # For observation we do not have ensemble
         # FIXME: very bad magic number
-        img_sz = 4 * 384  # 384*2x2
-        # img_sz = 192
+        # img_sz = 4 * 384  # 384x2x2
+        img_sz = 192
         self.stoch_net = nn.Sequential(
             # nn.LayerNorm(hidden_size + img_sz, hidden_size),
             nn.Linear(hidden_size + img_sz, hidden_size), # Dreamer 'obs_out'
@@ -422,14 +422,14 @@ class WorldModel(nn.Module):
             self.encoder = Encoder(norm_layer=nn.Identity if layer_norm else nn.GroupNorm)
 
         self.n_dim = 192
-        self.slot_attention = SlotAttention(slots_num, 1536, 3)
+        self.slot_attention = SlotAttention(slots_num, self.n_dim, 5)
         self.positional_augmenter_inp = PositionalEmbedding(self.n_dim, (6, 6))
         # self.positional_augmenter_dec = PositionalEmbedding(self.n_dim, (8, 8))
 
         self.slot_mlp = nn.Sequential(
-            nn.Linear(192, 768),
+            nn.Linear(self.n_dim, self.n_dim),
             nn.ReLU(inplace=True),
-            nn.Linear(768, 1536)
+            nn.Linear(self.n_dim, self.n_dim)
         )
 
 
@@ -489,7 +489,7 @@ class WorldModel(nn.Module):
         slots_t = self.slot_attention(pre_slot_features_t, prev_slots)
 
         _, posterior, _ = self.recurrent_model.forward(state, slots_t.unsqueeze(0), action)
-        return posterior, None
+        return posterior, slots_t
 
     def calculate_loss(self, obs: torch.Tensor, a: torch.Tensor, r: torch.Tensor,
                        discount: torch.Tensor, first: torch.Tensor):
@@ -500,7 +500,7 @@ class WorldModel(nn.Module):
         # embed_c = embed.reshape(b // self.cluster_size, self.cluster_size, -1)
 
         pre_slot_features = self.slot_mlp(embed_with_pos_enc.permute(0, 2, 3, 1).reshape(b, -1, self.n_dim))
-        pre_slot_features_c = pre_slot_features.reshape(b // self.cluster_size, self.cluster_size, -1, 1536)
+        pre_slot_features_c = pre_slot_features.reshape(b // self.cluster_size, self.cluster_size, -1, self.n_dim)
 
         a_c = a.reshape(-1, self.cluster_size, self.actions_num)
         r_c = r.reshape(-1, self.cluster_size, 1)
@@ -540,7 +540,7 @@ class WorldModel(nn.Module):
             a_t = a_t * (1 - first_t)
 
             slots_t = self.slot_attention(pre_slot_feature_t, prev_slots)
-            prev_slots = None
+            # prev_slots = None
 
             prior, posterior, diff = self.recurrent_model.forward(prev_state, slots_t.unsqueeze(0), a_t)
             prev_state = posterior
@@ -728,7 +728,7 @@ class DreamerV2(RlAgent):
                                                        eps=1e-5,
                                                        weight_decay=1e-6)
 
-        warmup_steps = 1e4
+        warmup_steps = 1e3
         decay_rate = 0.5
         decay_steps = 5e5
         lr_warmup_scheduler = torch.optim.lr_scheduler.LinearLR(self.world_model_optimizer, start_factor=1/warmup_steps, total_iters=int(warmup_steps))
@@ -936,7 +936,7 @@ class DreamerV2(RlAgent):
         first_flags = self.from_np(is_first).type(torch.float32)
 
         # take some latent embeddings as initial
-        with torch.cuda.amp.autocast(enabled=True):
+        with torch.cuda.amp.autocast(enabled=False):
             losses, discovered_states, wm_metrics = self.world_model.calculate_loss(obs, a, r, discount_factors, first_flags)
             self.world_model.recurrent_model.discretizer_scheduler.step()
 
@@ -968,7 +968,7 @@ class DreamerV2(RlAgent):
 
         metrics = wm_metrics
 
-        with torch.cuda.amp.autocast(enabled=True):
+        with torch.cuda.amp.autocast(enabled=False):
             losses_ac = {}
             initial_states = State(discovered_states.determ.flatten(0, 1).unsqueeze(0).detach(),
                                    discovered_states.stoch_logits.flatten(0, 1).unsqueeze(0).detach(),

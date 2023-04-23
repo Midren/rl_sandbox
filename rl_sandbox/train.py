@@ -136,7 +136,7 @@ def main(cfg: DictConfig):
 
         # FIXME: find more appealing solution
         ### Validation
-        if (global_step % cfg.training.val_logs_every) < (prev_global_step %
+        if (global_step % cfg.training.val_logs_every) <= (prev_global_step %
                                                           cfg.training.val_logs_every):
             val_logs(agent, cfg.validation, val_env, global_step, logger)
 
