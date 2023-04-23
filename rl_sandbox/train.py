@@ -9,6 +9,8 @@ import numpy as np
 import torch
 from gym.spaces import Discrete
 from omegaconf import DictConfig
+from hydra.core.hydra_config import HydraConfig
+from hydra.types import RunMode
 from torch.profiler import ProfilerActivity, profile
 from tqdm import tqdm
 
@@ -45,7 +47,7 @@ def main(cfg: DictConfig):
     lt.monkey_patch()
     # print(OmegaConf.to_yaml(cfg))
     torch.distributions.Distribution.set_default_validate_args(False)
-    torch.backends.cudnn.benchmark = True
+    eval('setattr(torch.backends.cudnn, "benchmark", True)') # need to be pickable for multirun
     torch.backends.cuda.matmul.allow_tf32 = True
 
     if torch.cuda.is_available():
@@ -53,6 +55,12 @@ def main(cfg: DictConfig):
     random.seed(cfg.seed)
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
+
+    if HydraConfig.get()['mode'] == RunMode.MULTIRUN and cfg.device_type == 'cuda':
+        num_gpus = torch.cuda.device_count()
+        gpu_id = HydraConfig.get().job.num % num_gpus
+        cfg.device_type = f'cuda:{gpu_id}'
+        cfg.logger.message += "," + ",".join(HydraConfig.get()['overrides']['task'])
 
     # TODO: Implement smarter techniques for exploration
     #       (Plan2Explore, etc)
