@@ -3,6 +3,7 @@ defaults:
   - env: dm_cartpole
   - training: dm
   - _self_
+  - override hydra/launcher: joblib
 
 seed: 42
 device_type: cuda
@@ -31,3 +32,11 @@ validation:
 
 debug:
   profiler: false
+
+hydra:
+  mode: MULTIRUN
+  launcher:
+    n_jobs: 1
+  sweeper:
+    params: []
+      #agent.kl_loss_scale: 1.0,2.0,4.0,8.0,12.0,16.0,22.0,32.0
