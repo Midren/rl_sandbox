@@ -10,7 +10,7 @@ device_type: cuda
 
 logger:
   type: tensorboard
-  message: Cartpole 8 slots, reduced warmup, 192 n_dim, correct prev_slots, 8x KL, 0 nats, 40 rssm dims, 16x16 stoch
+  message: Cartpole 4 slots, double encoder, reduced warmup, 384 n_dim, correct prev_slots, 0 nats, 40 rssm dims, 16x16 stoch
   #message: test_last
   log_grads: false
 
@@ -20,7 +20,7 @@ training:
   #prefill: 0
   #pretrain: 0
   batch_size: 16
-  val_logs_every: 1e2
+  val_logs_every: 4e3
 
 
 validation:
@@ -35,8 +35,9 @@ debug:
 
 hydra:
   mode: MULTIRUN
+  #mode: RUN
   launcher:
-    n_jobs: 1
+    n_jobs: 8
   sweeper:
-    params: []
-      #agent.kl_loss_scale: 1.0,2.0,4.0,8.0,12.0,16.0,22.0,32.0
+    params:
+      agent.kl_loss_scale: 4.0,8.0,12.0,16.0,22.0,28.0,32.0,48.0

@@ -179,7 +179,7 @@ class RSSM(nn.Module):
 
     """
 
-    def __init__(self, latent_dim, hidden_size, actions_num, latent_classes, discrete_rssm, norm_layer: nn.LayerNorm | nn.Identity):
+    def __init__(self, latent_dim, hidden_size, actions_num, latent_classes, discrete_rssm, norm_layer: nn.LayerNorm | nn.Identity, embed_size = 2*2*384):
         super().__init__()
         self.latent_dim = latent_dim
         self.latent_classes = latent_classes
@@ -211,7 +211,8 @@ class RSSM(nn.Module):
         # For observation we do not have ensemble
         # FIXME: very bad magic number
         # img_sz = 4 * 384  # 384x2x2
-        img_sz = 192
+        # img_sz = 192
+        img_sz = embed_size
         self.stoch_net = nn.Sequential(
             # nn.LayerNorm(hidden_size + img_sz, hidden_size),
             nn.Linear(hidden_size + img_sz, hidden_size), # Dreamer 'obs_out'
@@ -277,11 +278,14 @@ class Encoder(nn.Module):
         super().__init__()
         layers = []
 
-        channel_step = 48
+        channel_step = 96
         in_channels = 3
         for i, k in enumerate(kernel_sizes):
             out_channels = 2**i * channel_step
             layers.append(nn.Conv2d(in_channels, out_channels, kernel_size=k, stride=2))
+            layers.append(norm_layer(1, out_channels))
+            layers.append(nn.ELU(inplace=True))
+            layers.append(nn.Conv2d(out_channels, out_channels, kernel_size=3, padding='same'))
             layers.append(norm_layer(1, out_channels))
             layers.append(nn.ELU(inplace=True))
             in_channels = out_channels
@@ -393,12 +397,15 @@ class WorldModel(nn.Module):
         self.decode_vit = decode_vit
         self.vit_l2_ratio = vit_l2_ratio
 
+        self.n_dim = 384
+
         self.recurrent_model = RSSM(latent_dim,
                                     rssm_dim,
                                     actions_num,
                                     latent_classes,
                                     discrete_rssm,
-                                    norm_layer=nn.Identity if layer_norm else nn.LayerNorm)
+                                    norm_layer=nn.Identity if layer_norm else nn.LayerNorm,
+                                    embed_size=self.n_dim)
         if encode_vit or decode_vit:
             # self.dino_vit = ViTFeat("/dino/dino_vitbase8_pretrain/dino_vitbase8_pretrain.pth", feat_dim=768, vit_arch='base', patch_size=8)
             # self.dino_vit = ViTFeat("/dino/dino_deitsmall8_pretrain/dino_deitsmall8_pretrain.pth", feat_dim=384, vit_arch='small', patch_size=8)
@@ -421,7 +428,6 @@ class WorldModel(nn.Module):
         else:
             self.encoder = Encoder(norm_layer=nn.Identity if layer_norm else nn.GroupNorm)
 
-        self.n_dim = 192
         self.slot_attention = SlotAttention(slots_num, self.n_dim, 5)
         self.positional_augmenter_inp = PositionalEmbedding(self.n_dim, (6, 6))
         # self.positional_augmenter_dec = PositionalEmbedding(self.n_dim, (8, 8))
