@@ -6,9 +6,9 @@ latent_dim: 16
 latent_classes: 16
 rssm_dim: 40
 slots_num: 8
-kl_loss_scale: 8.0
+kl_loss_scale: 32.0
 kl_loss_balancing: 0.8
-kl_loss_free_nats: 0.0
+kl_loss_free_nats: 0.00
 world_model_lr: 3e-4
 world_model_predict_discount: false
 
