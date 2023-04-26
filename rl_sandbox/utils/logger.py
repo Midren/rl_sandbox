@@ -43,9 +43,9 @@ class Logger:
         for loss_name, loss in losses.items():
             if 'grad' in loss_name:
                 if self.log_grads:
-                    self.writer.add_histogram(f'train/{loss_name}', loss, global_step)
+                    self.writer.add_histogram(f'{mode}/{loss_name}', loss, global_step)
             else:
-                self.writer.add_scalar(f'train/{loss_name}', loss.item(), global_step)
+                self.writer.add_scalar(f'{mode}/{loss_name}', loss.item(), global_step)
 
     def add_scalar(self, name: str, value: t.Any, global_step: int):
         self.writer.add_scalar(name, value, global_step)

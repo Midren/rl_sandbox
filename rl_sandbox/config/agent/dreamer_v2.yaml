@@ -1,35 +1,75 @@
 _target_: rl_sandbox.agents.DreamerV2
-layer_norm: true
-# World model parameters
-batch_cluster_size: 50
-latent_dim: 16
-latent_classes: 16
-rssm_dim: 40
-slots_num: 8
-kl_loss_scale: 32.0
-kl_loss_balancing: 0.8
-kl_loss_free_nats: 0.00
-world_model_lr: 3e-4
-world_model_predict_discount: false
 
-# ActorCritic parameters
-discount_factor: 0.999
 imagination_horizon: 15
+batch_cluster_size: 50
+layer_norm: true
 
-actor_lr: 8e-5
-# mixing of reinforce and maximizing value func
-# for dm_control it is zero in Dreamer (Atari 1)
-actor_reinforce_fraction: null
-actor_entropy_scale: 1e-4
+world_model:
+  _target_: rl_sandbox.agents.dreamer.world_model.WorldModel
+  _partial_: true
+  batch_cluster_size: ${..batch_cluster_size}
+  latent_dim: 16
+  latent_classes: 16
+  rssm_dim: 40
+  slots_num: 2
+  kl_loss_scale: 2.0
+  kl_loss_balancing: 0.8
+  kl_free_nats: 0.05
+  discrete_rssm: false
+  decode_vit: false
+  vit_l2_ratio: 1.0
+  encode_vit: false
+  predict_discount: false
+  layer_norm: ${..layer_norm}
 
-critic_lr: 8e-5
-# Lambda parameter for trainin deeper multi-step prediction
-critic_value_target_lambda: 0.95
-critic_update_interval: 100
-# [0-1], 1 means hard update
-critic_soft_update_fraction: 1
+actor:
+  _target_: rl_sandbox.agents.dreamer.ac.ImaginativeActor
+  _partial_: true
+  # mixing of reinforce and maximizing value func
+  # for dm_control it is zero in Dreamer (Atari 1)
+  reinforce_fraction: null
+  entropy_scale: 1e-4
+  layer_norm: ${..layer_norm}
 
-discrete_rssm: false
-decode_vit: false
-vit_l2_ratio: 1.0
-encode_vit: false
+critic:
+  _target_: rl_sandbox.agents.dreamer.ac.ImaginativeCritic
+  _partial_: true
+  discount_factor: 0.999
+  update_interval: 100
+  # [0-1], 1 means hard update
+  soft_update_fraction: 1
+  # Lambda parameter for trainin deeper multi-step prediction
+  value_target_lambda: 0.95
+  layer_norm: ${..layer_norm}
+
+wm_optim:
+  _target_: rl_sandbox.utils.optimizer.Optimizer
+  _partial_: true
+  lr_scheduler:
+    - _target_: rl_sandbox.utils.optimizer.WarmupScheduler
+      _partial_: true
+      warmup_steps: 1e3
+    #- _target_: rl_sandbox.utils.optimizer.DecayScheduler
+    #  _partial_: true
+    #  decay_rate: 0.5
+    #  decay_steps: 5e5
+  lr: 3e-4
+  eps: 1e-5
+  weight_decay: 1e-6
+  clip: 100
+
+actor_optim:
+  _target_: rl_sandbox.utils.optimizer.Optimizer
+  _partial_: true
+  lr: 8e-5
+  eps: 1e-5
+  weight_decay: 1e-6
+  clip: 100
+
+critic_optim:
+  _target_: rl_sandbox.utils.optimizer.Optimizer
+  _partial_: true
+  lr: 8e-5
+  eps: 1e-5
+  weight_decay: 1e-6
+  clip: 100
