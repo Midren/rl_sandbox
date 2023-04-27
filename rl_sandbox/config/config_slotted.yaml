@@ -1,5 +1,5 @@
 defaults:
-  - agent: dreamer_v2
+  - agent: dreamer_v2_slotted
   - env: dm_cartpole
   - training: dm
   - _self_
@@ -10,12 +10,15 @@ device_type: cuda
 
 logger:
   type: null
-  message: Dreamer with DINO features
+  message: Cartpole 2 slots, double encoder, reduced warmup, 384 n_dim, correct prev_slots, 0.05 nats, 40 rssm dims, 16x16 stoch, 2x KL
   log_grads: false
 
 training:
   checkpoint_path: null
   steps: 1e6
+  prefill: 0
+  pretrain: 1
+  batch_size: 2
   val_logs_every: 1e3
 
 
@@ -26,7 +29,7 @@ validation:
     - _target_: rl_sandbox.metrics.EpisodeMetricsEvaluator
       log_video: True
       _partial_: true
-    - _target_: rl_sandbox.metrics.DreamerMetricsEvaluator
+    - _target_: rl_sandbox.metrics.SlottedDreamerMetricsEvaluator
       _partial_: true
 
 debug:

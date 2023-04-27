@@ -2,20 +2,21 @@ _target_: rl_sandbox.agents.DreamerV2
 
 imagination_horizon: 15
 batch_cluster_size: 50
-layer_norm: false
+layer_norm: true
 
 world_model:
-  _target_: rl_sandbox.agents.dreamer.world_model.WorldModel
+  _target_: rl_sandbox.agents.dreamer.world_model_slots.WorldModel
   _partial_: true
   batch_cluster_size: ${..batch_cluster_size}
-  latent_dim: 32
-  latent_classes: 32
-  rssm_dim: 200
-  kl_loss_scale: 1.0
+  latent_dim: 16
+  latent_classes: 16
+  rssm_dim: 40
+  slots_num: 2
+  kl_loss_scale: 2.0
   kl_loss_balancing: 0.8
   kl_free_nats: 0.05
   discrete_rssm: false
-  decode_vit: true
+  decode_vit: false
   vit_l2_ratio: 1.0
   encode_vit: false
   predict_discount: false
@@ -44,7 +45,14 @@ critic:
 wm_optim:
   _target_: rl_sandbox.utils.optimizer.Optimizer
   _partial_: true
-  lr_scheduler: null
+  lr_scheduler:
+    - _target_: rl_sandbox.utils.optimizer.WarmupScheduler
+      _partial_: true
+      warmup_steps: 1e3
+    #- _target_: rl_sandbox.utils.optimizer.DecayScheduler
+    #  _partial_: true
+    #  decay_rate: 0.5
+    #  decay_steps: 5e5
   lr: 3e-4
   eps: 1e-5
   weight_decay: 1e-6

@@ -103,6 +103,13 @@ class ImaginativeActor(nn.Module):
     def forward(self, z: torch.Tensor) -> td.Distribution:
         return self.actor(z)
 
+    def get_action(self, state) -> td.Distribution:
+        # FIXME: you should be ashamed for such fix for prev_slots
+        if isinstance(state, tuple):
+            return self.actor(state[0].combined)
+        else:
+            return self.actor(state.combined)
+
     def calculate_loss(self, zs: torch.Tensor, vs: torch.Tensor, baseline: torch.Tensor,
                        discount_factors: torch.Tensor, actions: torch.Tensor):
         losses = {}
