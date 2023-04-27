@@ -9,20 +9,26 @@ from torch.nn import functional as F
 from rl_sandbox.agents.dreamer import Dist, View
 from rl_sandbox.utils.schedulers import LinearScheduler
 
+
 @dataclass
 class State:
-    determ: Float[torch.Tensor, 'seq batch determ']
-    stoch_logits: Float[torch.Tensor, 'seq batch latent_classes latent_dim']
-    stoch_: t.Optional[Bool[torch.Tensor, 'seq batch stoch_dim']] = None
+    determ: Float[torch.Tensor, 'seq batch num_slots determ']
+    stoch_logits: Float[torch.Tensor, 'seq batch num_slots latent_classes latent_dim']
+    stoch_: t.Optional[Bool[torch.Tensor, 'seq batch num_slots stoch_dim']] = None
 
     @property
     def combined(self):
+        return torch.concat([self.determ, self.stoch], dim=-1).flatten(2, 3)
+
+    @property
+    def combined_slots(self):
         return torch.concat([self.determ, self.stoch], dim=-1)
 
     @property
     def stoch(self):
         if self.stoch_ is None:
-            self.stoch_ = Dist(self.stoch_logits).rsample().reshape(self.stoch_logits.shape[:2] + (-1,))
+            self.stoch_ = Dist(
+                self.stoch_logits).rsample().reshape(self.stoch_logits.shape[:3] + (-1, ))
         return self.stoch_
 
     @property
@@ -30,16 +36,15 @@ class State:
         return Dist(self.stoch_logits)
 
     @classmethod
-    def stack(cls, states: list['State'], dim = 0):
+    def stack(cls, states: list['State'], dim=0):
         if states[0].stoch_ is not None:
             stochs = torch.cat([state.stoch for state in states], dim=dim)
         else:
             stochs = None
         return State(torch.cat([state.determ for state in states], dim=dim),
-                     torch.cat([state.stoch_logits for state in states], dim=dim),
-                     stochs)
+                     torch.cat([state.stoch_logits for state in states], dim=dim), stochs)
 
-# TODO: move to common
+
 class GRUCell(nn.Module):
 
     def __init__(self, input_size, hidden_size, norm=False, update_bias=-1, **kwargs):
@@ -127,13 +132,16 @@ class Quantize(nn.Module):
     def embed_code(self, embed_id):
         return F.embedding(embed_id, self.embed.transpose(0, 1))
 
+
 class RSSM(nn.Module):
     """
     Recurrent State Space Model
+
     h_t    <- deterministic state which is updated inside GRU
     s^_t   <- stohastic discrete prior state (used for KL divergence:
                                                better predict future and encode smarter)
     s_t    <- stohastic discrete posterior state (latent representation of current state)
+
       h_1            --->     h_2            --->     h_3            --->
          \\    x_1               \\    x_2               \\    x_3
        |  \\    |     ^        |  \\    |     ^        |  \\    |     ^
@@ -145,9 +153,17 @@ class RSSM(nn.Module):
        v        v     |        v        v     |        v        v     |
                       |                       |                       |
       s^_1     s_1 ---|       s^_2     s_2 ---|       s^_3     s_3 ---|
+
     """
 
-    def __init__(self, latent_dim, hidden_size, actions_num, latent_classes, discrete_rssm, norm_layer: nn.LayerNorm | nn.Identity):
+    def __init__(self,
+                 latent_dim,
+                 hidden_size,
+                 actions_num,
+                 latent_classes,
+                 discrete_rssm,
+                 norm_layer: nn.LayerNorm | nn.Identity,
+                 embed_size=2 * 2 * 384):
         super().__init__()
         self.latent_dim = latent_dim
         self.latent_classes = latent_classes
@@ -160,9 +176,10 @@ class RSSM(nn.Module):
             nn.Linear(latent_dim * latent_classes + actions_num,
                       hidden_size),  # Dreamer 'img_in'
             norm_layer(hidden_size),
-            nn.ELU(inplace=True)
-        )
-        self.determ_recurrent = GRUCell(input_size=hidden_size, hidden_size=hidden_size, norm=True)  # Dreamer gru '_cell'
+            nn.ELU(inplace=True))
+        self.determ_recurrent = GRUCell(input_size=hidden_size,
+                                        hidden_size=hidden_size,
+                                        norm=True)  # Dreamer gru '_cell'
 
         # Calculate stochastic state from prior embed
         # shared between all ensemble models
@@ -173,15 +190,18 @@ class RSSM(nn.Module):
                 nn.ELU(inplace=True),
                 nn.Linear(hidden_size,
                           latent_dim * self.latent_classes),  # Dreamer 'img_dist_{k}'
-                View((1, -1, latent_dim, self.latent_classes))) for _ in range(self.ensemble_num)
+                View((1, -1, latent_dim, self.latent_classes)))
+            for _ in range(self.ensemble_num)
         ])
 
         # For observation we do not have ensemble
         # FIXME: very bad magic number
-        img_sz = 4 * 384  # 384*2x2
+        # img_sz = 4 * 384  # 384x2x2
+        # img_sz = 192
+        img_sz = embed_size
         self.stoch_net = nn.Sequential(
             # nn.LayerNorm(hidden_size + img_sz, hidden_size),
-            nn.Linear(hidden_size + img_sz, hidden_size), # Dreamer 'obs_out'
+            nn.Linear(hidden_size + img_sz, hidden_size),  # Dreamer 'obs_out'
             norm_layer(hidden_size),
             nn.ELU(inplace=True),
             nn.Linear(hidden_size,
@@ -200,30 +220,39 @@ class RSSM(nn.Module):
         idx = torch.randint(0, self.ensemble_num, ())
         return dists_per_model[0]
 
-    def predict_next(self,
-                     prev_state: State,
-                     action) -> State:
-        x = self.pre_determ_recurrent(torch.concat([prev_state.stoch, action], dim=-1))
+    def predict_next(self, prev_state: State, action) -> State:
+        x = self.pre_determ_recurrent(
+            torch.concat([
+                prev_state.stoch,
+                action.unsqueeze(2).repeat((1, 1, prev_state.determ.shape[2], 1))
+            ],
+                         dim=-1))
         # NOTE: x and determ are actually the same value if sequence of 1 is inserted
-        x, determ_prior = self.determ_recurrent(x, prev_state.determ)
+        x, determ_prior = self.determ_recurrent(x.flatten(1, 2),
+                                                prev_state.determ.flatten(1, 2))
         if self.discrete_rssm:
-            determ_post, diff, embed_ind = self.determ_discretizer(determ_prior)
-            determ_post = determ_post.reshape(determ_prior.shape)
-            determ_post = self.determ_layer_norm(determ_post)
-            alpha = self.discretizer_scheduler.val
-            determ_post = alpha * determ_prior + (1-alpha) * determ_post
+            raise NotImplementedError("discrete rssm was not adopted for slot attention")
+            # determ_post, diff, embed_ind = self.determ_discretizer(determ_prior)
+            # determ_post = determ_post.reshape(determ_prior.shape)
+            # determ_post = self.determ_layer_norm(determ_post)
+            # alpha = self.discretizer_scheduler.val
+            # determ_post = alpha * determ_prior + (1-alpha) * determ_post
         else:
             determ_post, diff = determ_prior, 0
 
         # used for KL divergence
         predicted_stoch_logits = self.estimate_stochastic_latent(x)
-        return State(determ_post, predicted_stoch_logits), diff
+        # Size is 1 x B x slots_num x ...
+        return State(determ_post.reshape(prev_state.determ.shape),
+                     predicted_stoch_logits.reshape(prev_state.stoch_logits.shape)), diff
 
-    def update_current(self, prior: State, embed) -> State: # Dreamer 'obs_out'
-        return State(prior.determ, self.stoch_net(torch.concat([prior.determ, embed], dim=-1)))
+    def update_current(self, prior: State, embed) -> State:  # Dreamer 'obs_out'
+        return State(
+            prior.determ,
+            self.stoch_net(torch.concat([prior.determ, embed], dim=-1)).flatten(
+                1, 2).reshape(prior.stoch_logits.shape))
 
-    def forward(self, h_prev: State, embed,
-                action) -> tuple[State, State]:
+    def forward(self, h_prev: State, embed, action) -> tuple[State, State]:
         """
             'h' <- internal state of the world
             'z' <- latent embedding of current observation

@@ -14,7 +14,7 @@ from hydra.types import RunMode
 from torch.profiler import ProfilerActivity, profile
 from tqdm import tqdm
 
-from rl_sandbox.metrics import MetricsEvaluator
+from rl_sandbox.metrics import EpisodeMetricsEvaluator
 from rl_sandbox.utils.env import Env
 from rl_sandbox.utils.logger import Logger
 from rl_sandbox.utils.replay_buffer import ReplayBuffer
@@ -23,29 +23,17 @@ from rl_sandbox.utils.rollout_generation import (collect_rollout_num,
                                                  iter_rollout)
 
 
-def val_logs(agent, val_cfg: DictConfig, env: Env, global_step: int, logger: Logger):
+def val_logs(agent, val_cfg: DictConfig, metrics, env: Env, logger: Logger):
     with torch.no_grad():
-        rollouts = collect_rollout_num(env, val_cfg.rollout_num, agent)
-    # TODO: make logs visualization in separate process
-    # Possibly make the data loader
-    metrics = MetricsEvaluator().calculate_metrics(rollouts)
-    logger.log(metrics, global_step, mode='val')
+        rollouts = collect_rollout_num(env, val_cfg.rollout_num, agent, collect_obs=True)
 
-    if val_cfg.visualize:
-        rollouts = collect_rollout_num(env, 1, agent, collect_obs=True)
-
-        for rollout in rollouts:
-            video = np.expand_dims(rollout.observations.transpose(0, 3, 1, 2), 0)
-            logger.add_video('val/visualization', video, global_step)
-            # FIXME: Very bad from architecture point
-            with torch.no_grad():
-                agent.viz_log(rollout, logger, global_step)
+    for metric in metrics:
+        metric.on_val(logger, rollouts)
 
 
-@hydra.main(version_base="1.2", config_path='config', config_name='config')
+@hydra.main(version_base="1.2", config_path='config', config_name='config_slotted')
 def main(cfg: DictConfig):
     lt.monkey_patch()
-    # print(OmegaConf.to_yaml(cfg))
     torch.distributions.Distribution.set_default_validate_args(False)
     eval('setattr(torch.backends.cudnn, "benchmark", True)') # need to be pickable for multirun
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -64,6 +52,7 @@ def main(cfg: DictConfig):
 
     # TODO: Implement smarter techniques for exploration
     #       (Plan2Explore, etc)
+    print(f'Start run: {cfg.logger.message}')
     logger = Logger(**cfg.logger)
 
     env: Env = hydra.utils.instantiate(cfg.env)
@@ -93,6 +82,8 @@ def main(cfg: DictConfig):
         device_type=cfg.device_type,
         logger=logger)
 
+    metrics = [metric(agent) for metric in hydra.utils.instantiate(cfg.validation.metrics)]
+
     prof = profile(
         activities=[ProfilerActivity.CUDA, ProfilerActivity.CPU],
         on_trace_ready=torch.profiler.tensorboard_trace_handler(logger.log_dir() + '/profiler'),
@@ -108,11 +99,7 @@ def main(cfg: DictConfig):
         losses = agent.train(s, a, r, n, f, first)
         logger.log(losses, i, mode='pre_train')
 
-        # TODO: remove constants
-        # log_every_n = 25
-        # if i % log_every_n == 0:
-        #     st = int(cfg.training.pretrain) // log_every_n
-    val_logs(agent, cfg.validation, val_env, -1, logger)
+    val_logs(agent, cfg.validation, metrics, val_env, logger)
 
     if cfg.training.checkpoint_path is not None:
         prev_global_step = global_step = agent.load_ckpt(cfg.training.checkpoint_path)
@@ -146,7 +133,7 @@ def main(cfg: DictConfig):
         ### Validation
         if (global_step % cfg.training.val_logs_every) <= (prev_global_step %
                                                           cfg.training.val_logs_every):
-            val_logs(agent, cfg.validation, val_env, global_step, logger)
+            val_logs(agent, cfg.validation, metrics, val_env, logger)
 
         ### Checkpoint
         if (global_step % cfg.training.save_checkpoint_every) < (
