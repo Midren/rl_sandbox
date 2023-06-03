@@ -1,7 +1,7 @@
 defaults:
-  - agent: dreamer_v2
-  - env: dm_cartpole
-  - training: dm
+  - agent: dreamer_v2_slotted_debug
+  - env: crafter
+  - training: crafter
   - _self_
   - override hydra/launcher: joblib
 
@@ -9,15 +9,14 @@ seed: 42
 device_type: cuda
 
 logger:
-  type: null
-  message: Dreamer with DINO features
+  type: tensorboard
+  message: Crafter 6 DINO slots, 32 latents, 256 rssm
   log_grads: false
 
 training:
   checkpoint_path: null
   steps: 1e6
-  val_logs_every: 1e3
-
+  val_logs_every: 2e4
 
 validation:
   rollout_num: 5
@@ -26,18 +25,18 @@ validation:
     - _target_: rl_sandbox.metrics.EpisodeMetricsEvaluator
       log_video: True
       _partial_: true
-    - _target_: rl_sandbox.metrics.DreamerMetricsEvaluator
+    - _target_: rl_sandbox.metrics.SlottedDreamerMetricsEvaluator
       _partial_: true
 
 debug:
   profiler: false
 
 hydra:
-  #mode: MULTIRUN
-  mode: RUN
+  mode: MULTIRUN
+  #mode: RUN
   launcher:
-    #n_jobs: 3
-    n_jobs: 1
+    n_jobs: 8
   sweeper:
     params:
-      #agent.kl_loss_scale: 64.0,128.0,256.0
+      agent.world_model.kl_loss_scale: 1e1,1e2,1e3,1e4
+      agent.world_model.vit_l2_ratio: 0.1,0.9

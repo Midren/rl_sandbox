@@ -20,8 +20,9 @@ class WorldModel(nn.Module):
     def __init__(self, batch_cluster_size, latent_dim, latent_classes, rssm_dim,
                  actions_num, kl_loss_scale, kl_loss_balancing, kl_free_nats,
                  discrete_rssm, predict_discount, layer_norm: bool, encode_vit: bool,
-                 decode_vit: bool, vit_l2_ratio: float, slots_num: int):
+                 decode_vit: bool, vit_l2_ratio: float, slots_num: int, slots_iter_num: int, use_prev_slots: bool = True):
         super().__init__()
+        self.use_prev_slots = use_prev_slots
         self.register_buffer('kl_free_nats', kl_free_nats * torch.ones(1))
         self.kl_beta = kl_loss_scale
 
@@ -80,7 +81,7 @@ class WorldModel(nn.Module):
                                    double_conv=True,
                                    flatten_output=False)
 
-        self.slot_attention = SlotAttention(slots_num, self.n_dim, 5)
+        self.slot_attention = SlotAttention(slots_num, self.n_dim, slots_iter_num)
         self.positional_augmenter_inp = PositionalEmbedding(self.n_dim, (6, 6))
         # self.positional_augmenter_dec = PositionalEmbedding(self.n_dim, (8, 8))
 
@@ -89,9 +90,12 @@ class WorldModel(nn.Module):
                                       nn.Linear(self.n_dim, self.n_dim))
 
         if decode_vit:
-            self.dino_predictor = ViTDecoder(
-                self.state_size,
-                norm_layer=nn.Identity if layer_norm else nn.GroupNorm)
+            self.dino_predictor = Decoder(rssm_dim + latent_dim * latent_classes,
+                                          norm_layer=nn.Identity if layer_norm else nn.GroupNorm,
+                                          channel_step=192,
+                                          kernel_sizes=[3, 4],
+                                          output_channels=self.vit_feat_dim+1,
+                                          return_dist=True)
             # self.dino_predictor = fc_nn_generator(rssm_dim + latent_dim*latent_classes,
             #                                        64*self.dino_vit.feat_dim,
             #                                        hidden_size=2048,
@@ -102,7 +106,7 @@ class WorldModel(nn.Module):
         self.image_predictor = Decoder(
             rssm_dim + latent_dim * latent_classes,
             norm_layer=nn.Identity if layer_norm else nn.GroupNorm,
-            output_channels=4,
+            output_channels=3+1,
             return_dist=False)
 
         self.reward_predictor = fc_nn_generator(self.state_size,
@@ -156,7 +160,10 @@ class WorldModel(nn.Module):
         if state is None or state[0] is None:
             state, prev_slots = self.get_initial_state()
         else:
-            state, prev_slots = state
+            if self.use_prev_slots:
+                state, prev_slots = state
+            else:
+                state, prev_slots = state[0], None
         embed = self.encoder(obs.unsqueeze(0))
         embed_with_pos_enc = self.positional_augmenter_inp(embed)
 
@@ -228,7 +235,11 @@ class WorldModel(nn.Module):
             a_t = a_t * (1 - first_t)
 
             slots_t = self.slot_attention(pre_slot_feature_t, prev_slots)
-            # prev_slots = None
+            # FIXME: prev_slots was not used properly, need to rerun test
+            if self.use_prev_slots:
+                prev_slots = slots_t
+            else:
+                prev_slots = None
 
             prior, posterior, diff = self.recurrent_model.forward(
                 prev_state, slots_t.unsqueeze(0), a_t)
@@ -260,8 +271,8 @@ class WorldModel(nn.Module):
             #     x_r = self.image_predictor(posterior.combined_slots.transpose(0, 1).flatten(0, 1))
             #     img_rec = -x_r.log_prob(obs).float().mean()
             # else:
-            #     img_rec = 0
-            #     x_r_detached = self.image_predictor(posterior.combined_slots.transpose(0, 1).flatten(0, 1).detach())
+                # img_rec = 0
+                # x_r_detached = self.image_predictor(posterior.combined_slots.transpose(0, 1).flatten(0, 1).detach())
             #     losses['loss_reconstruction_img'] = -x_r_detached.log_prob(obs).float().mean()
             # d_pred = self.dino_predictor(posterior.combined_slots.transpose(0, 1).flatten(0, 1))
             # losses['loss_reconstruction'] = (self.vit_l2_ratio * -d_pred.log_prob(d_features.reshape(b, self.vit_feat_dim, 14, 14)).float().mean()/4 +

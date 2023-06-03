@@ -20,8 +20,8 @@ class SlotAttention(nn.Module):
         self.scale = self.n_dim**(-1/2)
         self.epsilon = 1e-8
 
-        self.slots_mu = nn.Parameter(torch.randn(1, 1, self.n_dim))
-        self.slots_logsigma = nn.Parameter(torch.zeros(1, 1, self.n_dim))
+        self.slots_mu = nn.Parameter(torch.randn(1, num_slots, self.n_dim))
+        self.slots_logsigma = nn.Parameter(torch.zeros(1, num_slots, self.n_dim))
         nn.init.xavier_uniform_(self.slots_logsigma)
 
         self.slots_proj = nn.Linear(n_dim, n_dim)

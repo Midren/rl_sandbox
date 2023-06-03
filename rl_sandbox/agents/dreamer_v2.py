@@ -115,6 +115,9 @@ class DreamerV2(RlAgent):
         self._last_action = actor_dist.sample()
 
         if self.is_discrete:
+            self._action_probs += actor_dist.probs.squeeze()
+
+        if self.is_discrete:
             return self._last_action.squeeze().detach().cpu().numpy().argmax()
         else:
             return self._last_action.squeeze().detach().cpu().numpy()

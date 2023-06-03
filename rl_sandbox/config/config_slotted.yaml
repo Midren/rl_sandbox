@@ -1,5 +1,5 @@
 defaults:
-  - agent: dreamer_v2_slotted
+  - agent: dreamer_v2_slotted_debug
   - env: dm_cartpole
   - training: dm
   - _self_
@@ -9,17 +9,14 @@ seed: 42
 device_type: cuda
 
 logger:
-  type: null
-  message: Cartpole 2 slots, double encoder, reduced warmup, 384 n_dim, correct prev_slots, 0.05 nats, 40 rssm dims, 16x16 stoch, 2x KL
+  type: tensorboard
+  message: Cartpole 4 slots, 384 n_dim, 80 rssm dims, 22x22 stoch
   log_grads: false
 
 training:
   checkpoint_path: null
   steps: 1e6
-  prefill: 0
-  pretrain: 1
-  batch_size: 2
-  val_logs_every: 1e3
+  val_logs_every: 5e4
 
 
 validation:
@@ -36,11 +33,12 @@ debug:
   profiler: false
 
 hydra:
-  #mode: MULTIRUN
-  mode: RUN
+  mode: MULTIRUN
+  #mode: RUN
   launcher:
-    #n_jobs: 3
-    n_jobs: 1
+    n_jobs: 8
+    #n_jobs: 1
   sweeper:
     params:
-      #agent.kl_loss_scale: 64.0,128.0,256.0
+      agent.world_model.kl_loss_scale: 0.1,1e2,1e3,1e4
+      agent.world_model.kl_free_nats: 0,1e-2

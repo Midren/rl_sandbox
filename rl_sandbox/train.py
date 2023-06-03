@@ -31,7 +31,7 @@ def val_logs(agent, val_cfg: DictConfig, metrics, env: Env, logger: Logger):
         metric.on_val(logger, rollouts)
 
 
-@hydra.main(version_base="1.2", config_path='config', config_name='config_slotted')
+@hydra.main(version_base="1.2", config_path='config', config_name='config')
 def main(cfg: DictConfig):
     lt.monkey_patch()
     torch.distributions.Distribution.set_default_validate_args(False)
@@ -126,8 +126,14 @@ def main(cfg: DictConfig):
                 if global_step % 100 == 0:
                     logger.log(losses, global_step, mode='train')
 
+            for metric in metrics:
+                metric.on_step(logger)
+
             global_step += cfg.env.repeat_action_num
             pbar.update(cfg.env.repeat_action_num)
+
+        for metric in metrics:
+            metric.on_episode(logger)
 
         # FIXME: find more appealing solution
         ### Validation

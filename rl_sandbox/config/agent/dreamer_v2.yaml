@@ -11,12 +11,12 @@ world_model:
   latent_dim: 32
   latent_classes: 32
   rssm_dim: 200
-  kl_loss_scale: 1.0
+  kl_loss_scale: 1e1
   kl_loss_balancing: 0.8
-  kl_free_nats: 0.05
+  kl_free_nats: 0.00
   discrete_rssm: false
-  decode_vit: true
-  vit_l2_ratio: 1.0
+  decode_vit: false
+  vit_l2_ratio: 0.8
   encode_vit: false
   predict_discount: false
   layer_norm: ${..layer_norm}

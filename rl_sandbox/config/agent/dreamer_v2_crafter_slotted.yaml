@@ -9,19 +9,19 @@ world_model:
   _partial_: true
   batch_cluster_size: ${..batch_cluster_size}
   latent_dim: 22
-  latent_classes: 22
-  rssm_dim: 80
-  slots_num: 4
-  slots_iter_num: 5
-  kl_loss_scale: 2.0
+  latent_classes: ${.latent_dim}
+  rssm_dim: 256
+  slots_num: 6
+  slots_iter_num: 2
+  kl_loss_scale: 1e1
   kl_loss_balancing: 0.8
-  kl_free_nats: 0.05
+  kl_free_nats: 0.00
   discrete_rssm: false
   decode_vit: false
+  use_prev_slots: false
   vit_l2_ratio: 1.0
-  use_prev_slots: true
   encode_vit: false
-  predict_discount: false
+  predict_discount: true
   layer_norm: ${..layer_norm}
 
 actor:
@@ -30,7 +30,7 @@ actor:
   # mixing of reinforce and maximizing value func
   # for dm_control it is zero in Dreamer (Atari 1)
   reinforce_fraction: null
-  entropy_scale: 1e-4
+  entropy_scale: 3e-3
   layer_norm: ${..layer_norm}
 
 critic:
@@ -51,11 +51,7 @@ wm_optim:
     - _target_: rl_sandbox.utils.optimizer.WarmupScheduler
       _partial_: true
       warmup_steps: 1e3
-    #- _target_: rl_sandbox.utils.optimizer.DecayScheduler
-    #  _partial_: true
-    #  decay_rate: 0.5
-    #  decay_steps: 5e5
-  lr: 3e-4
+  lr: 2e-4
   eps: 1e-5
   weight_decay: 1e-6
   clip: 100
@@ -63,7 +59,7 @@ wm_optim:
 actor_optim:
   _target_: rl_sandbox.utils.optimizer.Optimizer
   _partial_: true
-  lr: 8e-5
+  lr: 2e-4
   eps: 1e-5
   weight_decay: 1e-6
   clip: 100
@@ -71,7 +67,7 @@ actor_optim:
 critic_optim:
   _target_: rl_sandbox.utils.optimizer.Optimizer
   _partial_: true
-  lr: 8e-5
+  lr: 2e-4
   eps: 1e-5
   weight_decay: 1e-6
   clip: 100
