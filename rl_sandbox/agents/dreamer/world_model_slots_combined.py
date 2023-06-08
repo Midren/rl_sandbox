@@ -7,7 +7,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from rl_sandbox.agents.dreamer import Dist, Normalizer
-from rl_sandbox.agents.dreamer.rssm_slots import RSSM, State
+from rl_sandbox.agents.dreamer.rssm_slots_combined import RSSM, State
 from rl_sandbox.agents.dreamer.vision import Decoder, Encoder, ViTDecoder
 from rl_sandbox.utils.dists import DistLayer
 from rl_sandbox.utils.fc_nn import fc_nn_generator
@@ -50,6 +50,7 @@ class WorldModel(nn.Module):
             latent_classes,
             discrete_rssm,
             norm_layer=nn.Identity if layer_norm else nn.LayerNorm,
+            slots_num=slots_num,
             embed_size=self.n_dim)
         if encode_vit or decode_vit:
             # self.dino_vit = ViTFeat("/dino/dino_vitbase8_pretrain/dino_vitbase8_pretrain.pth", feat_dim=768, vit_arch='base', patch_size=8)

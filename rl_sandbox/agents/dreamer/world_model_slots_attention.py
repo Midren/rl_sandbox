@@ -7,8 +7,8 @@ from torch import nn
 from torch.nn import functional as F
 
 from rl_sandbox.agents.dreamer import Dist, Normalizer
-from rl_sandbox.agents.dreamer.rssm_slots import RSSM, State
-from rl_sandbox.agents.dreamer.vision import Decoder, Encoder, ViTDecoder
+from rl_sandbox.agents.dreamer.rssm_slots_attention import RSSM, State
+from rl_sandbox.agents.dreamer.vision import Decoder, Encoder
 from rl_sandbox.utils.dists import DistLayer
 from rl_sandbox.utils.fc_nn import fc_nn_generator
 from rl_sandbox.vision.dino import ViTFeat

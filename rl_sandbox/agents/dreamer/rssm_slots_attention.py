@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import torch
 from jaxtyping import Bool, Float
 from torch import nn
+import torch.nn.functional as F
 
 from rl_sandbox.agents.dreamer import Dist, View, GRUCell
 
@@ -115,6 +116,16 @@ class RSSM(nn.Module):
                       latent_dim * self.latent_classes),  # Dreamer 'obs_dist'
             View((1, -1, latent_dim, self.latent_classes)))
 
+        self.hidden_attention_proj = nn.Linear(hidden_size, 3*hidden_size)
+        self.pre_norm = nn.LayerNorm(hidden_size)
+
+        self.fc = nn.Linear(hidden_size, hidden_size)
+        self.fc_norm = nn.LayerNorm(hidden_size)
+
+        self.attention_block_num = 3
+        self.att_scale = hidden_size**(-0.5)
+        self.eps = 1e-8
+
     def estimate_stochastic_latent(self, prev_determ: torch.Tensor):
         dists_per_model = [model(prev_determ) for model in self.ensemble_prior_estimator]
         # NOTE: Maybe something smarter can be used instead of
@@ -130,6 +141,7 @@ class RSSM(nn.Module):
                 action.unsqueeze(2).repeat((1, 1, prev_state.determ.shape[2], 1))
             ],
                          dim=-1))
+
         # NOTE: x and determ are actually the same value if sequence of 1 is inserted
         x, determ_prior = self.determ_recurrent(x.flatten(1, 2),
                                                 prev_state.determ.flatten(1, 2))
@@ -138,11 +150,26 @@ class RSSM(nn.Module):
         else:
             determ_post, diff = determ_prior, 0
 
+        determ_post = determ_post.reshape(prev_state.determ.shape)
+
+        # TODO: Introduce self-attention block here !
+        # Experiment, when only stochastic part is affected and deterministic is not touched
+        # We keep flow of gradients through determ block, but updating it with stochastic part
+        for _ in range(self.attention_block_num):
+            q, k, v = self.hidden_attention_proj(self.pre_norm(determ_post)).chunk(3, dim=-1) # 1xBxSlots_numxHidden_size
+            qk = torch.einsum('lbih,lbjh->lbij', q, k)
+
+            attn = torch.softmax(self.att_scale * qk + self.eps, dim=-1)
+            attn = attn / attn.sum(dim=-1, keepdim=True)
+
+            updates = torch.einsum('lbij,lbjh->lbih', qk, v)
+            determ_post = determ_post + self.fc(self.fc_norm(updates))
+
         # used for KL divergence
-        predicted_stoch_logits = self.estimate_stochastic_latent(x)
+        predicted_stoch_logits = self.estimate_stochastic_latent(determ_post.reshape(determ_prior.shape)).reshape(prev_state.stoch_logits.shape)
         # Size is 1 x B x slots_num x ...
-        return State(determ_post.reshape(prev_state.determ.shape),
-                     predicted_stoch_logits.reshape(prev_state.stoch_logits.shape)), diff
+        return State(determ_post,
+                     predicted_stoch_logits), diff
 
     def update_current(self, prior: State, embed) -> State:  # Dreamer 'obs_out'
         return State(
@@ -161,3 +188,4 @@ class RSSM(nn.Module):
         posterior = self.update_current(prior, embed)
 
         return prior, posterior, diff
+

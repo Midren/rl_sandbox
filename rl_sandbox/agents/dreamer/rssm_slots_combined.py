@@ -73,8 +73,10 @@ class RSSM(nn.Module):
                  latent_classes,
                  discrete_rssm,
                  norm_layer: nn.LayerNorm | nn.Identity,
+                 slots_num: int,
                  embed_size=2 * 2 * 384):
         super().__init__()
+        self.slots_num = slots_num
         self.latent_dim = latent_dim
         self.latent_classes = latent_classes
         self.ensemble_num = 1
@@ -87,8 +89,8 @@ class RSSM(nn.Module):
                       hidden_size),  # Dreamer 'img_in'
             norm_layer(hidden_size),
             nn.ELU(inplace=True))
-        self.determ_recurrent = GRUCell(input_size=hidden_size,
-                                        hidden_size=hidden_size,
+        self.determ_recurrent = GRUCell(input_size=hidden_size*slots_num,
+                                        hidden_size=hidden_size*slots_num,
                                         norm=True)  # Dreamer gru '_cell'
 
         # Calculate stochastic state from prior embed
@@ -104,7 +106,6 @@ class RSSM(nn.Module):
             for _ in range(self.ensemble_num)
         ])
 
-        # For observation we do not have ensemble
         img_sz = embed_size
         self.stoch_net = nn.Sequential(
             # nn.LayerNorm(hidden_size + img_sz, hidden_size),
@@ -131,15 +132,16 @@ class RSSM(nn.Module):
             ],
                          dim=-1))
         # NOTE: x and determ are actually the same value if sequence of 1 is inserted
-        x, determ_prior = self.determ_recurrent(x.flatten(1, 2),
-                                                prev_state.determ.flatten(1, 2))
+        x, determ_prior = self.determ_recurrent(x.flatten(2, 3),
+                                                prev_state.determ.flatten(2, 3))
         if self.discrete_rssm:
             raise NotImplementedError("discrete rssm was not adopted for slot attention")
         else:
             determ_post, diff = determ_prior, 0
 
         # used for KL divergence
-        predicted_stoch_logits = self.estimate_stochastic_latent(x)
+        # TODO: Test both options (with slot in batch size and in feature dim)
+        predicted_stoch_logits = self.estimate_stochastic_latent(x.reshape(prev_state.determ.shape))
         # Size is 1 x B x slots_num x ...
         return State(determ_post.reshape(prev_state.determ.shape),
                      predicted_stoch_logits.reshape(prev_state.stoch_logits.shape)), diff
@@ -161,3 +163,5 @@ class RSSM(nn.Module):
         posterior = self.update_current(prior, embed)
 
         return prior, posterior, diff
+
+

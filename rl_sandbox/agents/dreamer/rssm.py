@@ -6,7 +6,7 @@ from jaxtyping import Bool, Float
 from torch import nn
 from torch.nn import functional as F
 
-from rl_sandbox.agents.dreamer import Dist, View
+from rl_sandbox.agents.dreamer import Dist, View, GRUCell
 from rl_sandbox.utils.schedulers import LinearScheduler
 
 @dataclass
@@ -38,40 +38,6 @@ class State:
         return State(torch.cat([state.determ for state in states], dim=dim),
                      torch.cat([state.stoch_logits for state in states], dim=dim),
                      stochs)
-
-# TODO: move to common
-class GRUCell(nn.Module):
-
-    def __init__(self, input_size, hidden_size, norm=False, update_bias=-1, **kwargs):
-        super().__init__()
-        self._size = hidden_size
-        self._act = torch.tanh
-        self._norm = norm
-        self._update_bias = update_bias
-        self._layer = nn.Linear(input_size + hidden_size,
-                                3 * hidden_size,
-                                bias=norm is not None,
-                                **kwargs)
-        if norm:
-            self._norm = nn.LayerNorm(3 * hidden_size)
-
-    @property
-    def state_size(self):
-        return self._size
-
-    def forward(self, x, h):
-        state = h
-        parts = self._layer(torch.concat([x, state], -1))
-        if self._norm:
-            dtype = parts.dtype
-            parts = self._norm(parts.float())
-            parts = parts.to(dtype=dtype)
-        reset, cand, update = parts.chunk(3, dim=-1)
-        reset = torch.sigmoid(reset)
-        cand = self._act(reset * cand)
-        update = torch.sigmoid(update + self._update_bias)
-        output = update * cand + (1 - update) * state
-        return output, output
 
 
 class Quantize(nn.Module):

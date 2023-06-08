@@ -163,6 +163,20 @@ class SlottedDreamerMetricsEvaluator(DreamerMetricsEvaluator):
             self._action_probs += self._action_probs
         self._latent_probs += self.agent._state[0].stoch_dist.probs.squeeze().mean(dim=0)
 
+    def on_episode(self, logger):
+        mu = self.agent.world_model.slot_attention.slots_mu
+        sigma = self.agent.world_model.slot_attention.slots_logsigma.exp()
+        mu_hist = torch.mean((mu - mu.squeeze(0).unsqueeze(1)) ** 2, dim=-1)
+        sigma_hist = torch.mean((sigma - sigma.squeeze(0).unsqueeze(1)) ** 2, dim=-1)
+
+        logger.add_image('val/slot_attention_mu', mu_hist, self.episode)
+        logger.add_image('val/slot_attention_sigma', sigma_hist, self.episode, dataformats='HW')
+
+        logger.add_scalar('val/slot_attention_mu_diff_max', mu_hist.max(), self.episode)
+        logger.add_scalar('val/slot_attention_sigma_diff_max', sigma_hist.max(), self.episode)
+
+        super().on_episode(logger)
+
     def _generate_video(self, obs: list[Observation], actions: list[Action], update_num: int):
         obs = torch.from_numpy(obs.copy()).to(self.agent.device)
         obs = self.agent.preprocess_obs(obs)

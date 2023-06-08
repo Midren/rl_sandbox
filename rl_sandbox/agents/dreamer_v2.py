@@ -140,7 +140,8 @@ class DreamerV2(RlAgent):
         # take some latent embeddings as initial
         with torch.cuda.amp.autocast(enabled=False):
             losses_wm, discovered_states, metrics_wm = self.world_model.calculate_loss(obs, a, r, discount_factors, first_flags)
-            self.world_model.recurrent_model.discretizer_scheduler.step()
+            # FIXME: wholely remove discrete RSSM
+            # self.world_model.recurrent_model.discretizer_scheduler.step()
 
         if self.world_model.decode_vit and self.world_model.vit_l2_ratio == 1.0:
             self.image_predictor_optimizer.step(losses_wm['loss_reconstruction_img'])
