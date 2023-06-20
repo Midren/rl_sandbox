@@ -102,6 +102,20 @@ class WorldModel(nn.Module):
                                                   final_activation=DistLayer('binary'))
         self.reward_normalizer = Normalizer(momentum=1.00, scale=1.0, eps=1e-8)
 
+    def precalc_data(self, obs: torch.Tensor) -> dict[str, torch.Tensor]:
+        if not self.decode_vit:
+            return {}
+        if not self.encode_vit:
+            # ToTensor = tv.transforms.Compose([tv.transforms.Normalize((0.485, 0.456, 0.406),
+            #                                        (0.229, 0.224, 0.225)),
+            #                                   tv.transforms.Resize(224, antialias=True)])
+            ToTensor = tv.transforms.Normalize((0.485, 0.456, 0.406),
+                                                   (0.229, 0.224, 0.225))
+            obs = ToTensor(obs + 0.5)
+        with torch.no_grad():
+            d_features = self.dino_vit(obs.unsqueeze(0)).squeeze().cpu()
+        return {'d_features': d_features}
+
     def get_initial_state(self, batch_size: int = 1, seq_size: int = 1):
         device = next(self.parameters()).device
         return State(torch.zeros(seq_size, batch_size, self.rssm_dim, device=device),
@@ -127,7 +141,7 @@ class WorldModel(nn.Module):
         return posterior
 
     def calculate_loss(self, obs: torch.Tensor, a: torch.Tensor, r: torch.Tensor,
-                       discount: torch.Tensor, first: torch.Tensor):
+                       discount: torch.Tensor, first: torch.Tensor, additional: dict[str, torch.Tensor]):
         b, _, h, w = obs.shape  # s <- BxHxWx3
 
         embed = self.encoder(obs)
@@ -157,15 +171,7 @@ class WorldModel(nn.Module):
         posteriors = []
 
         if self.decode_vit:
-            inp = obs
-            if not self.encode_vit:
-                # ToTensor = tv.transforms.Compose([tv.transforms.Normalize((0.485, 0.456, 0.406),
-                #                                        (0.229, 0.224, 0.225)),
-                #                                   tv.transforms.Resize(224, antialias=True)])
-                ToTensor = tv.transforms.Normalize((0.485, 0.456, 0.406),
-                                                       (0.229, 0.224, 0.225))
-                inp = ToTensor(obs + 0.5)
-            d_features = self.dino_vit(inp)
+            d_features = additional['d_features']
 
         prev_state = self.get_initial_state(b // self.cluster_size)
         for t in range(self.cluster_size):

@@ -14,7 +14,6 @@ from hydra.types import RunMode
 from torch.profiler import ProfilerActivity, profile
 from tqdm import tqdm
 
-from rl_sandbox.metrics import EpisodeMetricsEvaluator
 from rl_sandbox.utils.env import Env
 from rl_sandbox.utils.logger import Logger
 from rl_sandbox.utils.replay_buffer import ReplayBuffer
@@ -26,6 +25,7 @@ from rl_sandbox.utils.rollout_generation import (collect_rollout_num,
 def val_logs(agent, val_cfg: DictConfig, metrics, env: Env, logger: Logger):
     with torch.no_grad():
         rollouts = collect_rollout_num(env, val_cfg.rollout_num, agent, collect_obs=True)
+        rollouts = [agent.preprocess(r) for r in rollouts]
 
     for metric in metrics:
         metric.on_val(logger, rollouts)
@@ -65,14 +65,6 @@ def main(cfg: DictConfig):
                                        save_video=False,
                                        save_episode=False)
 
-    buff = ReplayBuffer(prioritize_ends=cfg.training.prioritize_ends,
-                        min_ep_len=cfg.agent.get('batch_cluster_size', 1) *
-                        (cfg.training.prioritize_ends + 1))
-    fillup_replay_buffer(
-        env, buff,
-        max(cfg.training.prefill,
-            cfg.training.batch_size * cfg.agent.get('batch_cluster_size', 1)))
-
     is_discrete = isinstance(env.action_space, Discrete)
     agent = hydra.utils.instantiate(
         cfg.agent,
@@ -81,6 +73,18 @@ def main(cfg: DictConfig):
         action_type='discrete' if is_discrete else 'continuous',
         device_type=cfg.device_type,
         logger=logger)
+
+    buff = ReplayBuffer(prioritize_ends=cfg.training.prioritize_ends,
+                        min_ep_len=cfg.agent.get('batch_cluster_size', 1) *
+                        (cfg.training.prioritize_ends + 1),
+                        preprocess_func=agent.preprocess,
+                        device = cfg.device_type)
+
+    fillup_replay_buffer(
+        env, buff,
+        max(cfg.training.prefill,
+            cfg.training.batch_size * cfg.agent.get('batch_cluster_size', 1)),
+        agent=agent)
 
     metrics = [metric(agent) for metric in hydra.utils.instantiate(cfg.validation.metrics)]
 
@@ -93,10 +97,10 @@ def main(cfg: DictConfig):
     for i in tqdm(range(int(cfg.training.pretrain)), desc='Pretraining'):
         if cfg.training.checkpoint_path is not None:
             break
-        s, a, r, n, f, first = buff.sample(cfg.training.batch_size,
+        rollout_chunks = buff.sample(cfg.training.batch_size,
                                            cluster_size=cfg.agent.get(
                                                'batch_cluster_size', 1))
-        losses = agent.train(s, a, r, n, f, first)
+        losses = agent.train(rollout_chunks)
         logger.log(losses, i, mode='pre_train')
 
     val_logs(agent, cfg.validation, metrics, val_env, logger)
@@ -110,17 +114,18 @@ def main(cfg: DictConfig):
     while global_step < cfg.training.steps:
         ### Training and exploration
 
-        for s, a, r, n, f, _ in iter_rollout(env, agent):
-            buff.add_sample(s, a, r, n, f)
+        for env_step in iter_rollout(env, agent):
+            # env_step = agent.preprocess(env_step)
+            buff.add_sample(env_step)
 
             if global_step % cfg.training.train_every == 0:
                 # NOTE: unintuitive that batch_size is now number of total
                 #       samples, but not amount of sequences for recurrent model
-                s, a, r, n, f, first = buff.sample(cfg.training.batch_size,
+                rollout_chunk = buff.sample(cfg.training.batch_size,
                                                    cluster_size=cfg.agent.get(
                                                        'batch_cluster_size', 1))
 
-                losses = agent.train(s, a, r, n, f, first)
+                losses = agent.train(rollout_chunk)
                 if cfg.debug.profiler:
                     prof.step()
                 if global_step % 100 == 0:

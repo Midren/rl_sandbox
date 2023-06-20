@@ -3,16 +3,13 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from torch import nn
 from torch.nn import functional as F
 import torchvision as tv
+from unpackable import unpack
 
 from rl_sandbox.agents.rl_agent import RlAgent
-from rl_sandbox.utils.fc_nn import fc_nn_generator
-from rl_sandbox.utils.replay_buffer import (Action, Actions, Observation,
-                                            Observations, Rewards,
-                                            TerminationFlags, IsFirstFlags)
-from rl_sandbox.utils.optimizer import Optimizer
+from rl_sandbox.utils.replay_buffer import (Action, Observation,
+                                            RolloutChunks, EnvStep, Rollout)
 
 from rl_sandbox.agents.dreamer.world_model import WorldModel, State
 from rl_sandbox.agents.dreamer.ac import ImaginativeCritic, ImaginativeActor
@@ -91,6 +88,16 @@ class DreamerV2(RlAgent):
         self._last_action = torch.zeros((1, 1, self.actions_num), device=self.device)
         self._action_probs = torch.zeros((self.actions_num), device=self.device)
 
+    def preprocess(self, rollout: Rollout):
+        obs = self.preprocess_obs(rollout.obs)
+        additional = self.world_model.precalc_data(obs.to(self.device))
+        return Rollout(obs=obs,
+                       actions=rollout.actions,
+                       rewards=rollout.rewards,
+                       is_finished=rollout.is_finished,
+                       is_first=rollout.is_first,
+                       additional_data=rollout.additional_data | additional)
+
     def preprocess_obs(self, obs: torch.Tensor):
         # FIXME: move to dataloader in replay buffer
         order = list(range(len(obs.shape)))
@@ -105,8 +112,7 @@ class DreamerV2(RlAgent):
         # return obs.type(torch.float32).permute(order)
 
     def get_action(self, obs: Observation) -> Action:
-        # NOTE: pytorch fails without .copy() only when get_action is called
-        obs = torch.from_numpy(obs.copy()).to(self.device)
+        obs = torch.from_numpy(obs).to(self.device)
         obs = self.preprocess_obs(obs)
 
         self._state = self.world_model.get_latent(obs, self._last_action, self._state)
@@ -118,7 +124,7 @@ class DreamerV2(RlAgent):
             self._action_probs += actor_dist.probs.squeeze()
 
         if self.is_discrete:
-            return self._last_action.squeeze().detach().cpu().numpy().argmax()
+            return self._last_action.argmax()
         else:
             return self._last_action.squeeze().detach().cpu().numpy()
 
@@ -126,20 +132,18 @@ class DreamerV2(RlAgent):
         arr = torch.from_numpy(arr) if isinstance(arr, np.ndarray) else arr
         return arr.to(self.device, non_blocking=True)
 
-    def train(self, obs: Observations, a: Actions, r: Rewards, next_obs: Observations,
-              is_finished: TerminationFlags, is_first: IsFirstFlags):
-
-        obs = self.preprocess_obs(self.from_np(obs))
-        a = self.from_np(a)
+    def train(self, rollout_chunks: RolloutChunks):
+        obs, a, r, is_finished, is_first, additional = unpack(rollout_chunks)
+        torch.cuda.current_stream().synchronize()
+        # obs = self.preprocess_obs(self.from_np(obs))
         if self.is_discrete:
             a = F.one_hot(a.to(torch.int64), num_classes=self.actions_num).squeeze()
-        r = self.from_np(r)
-        discount_factors = (1 - self.from_np(is_finished).type(torch.float32))
-        first_flags = self.from_np(is_first).type(torch.float32)
+        discount_factors = (1 - is_finished).float()
+        first_flags = is_first.float()
 
         # take some latent embeddings as initial
         with torch.cuda.amp.autocast(enabled=False):
-            losses_wm, discovered_states, metrics_wm = self.world_model.calculate_loss(obs, a, r, discount_factors, first_flags)
+            losses_wm, discovered_states, metrics_wm = self.world_model.calculate_loss(obs, a, r, discount_factors, first_flags, additional)
             # FIXME: wholely remove discrete RSSM
             # self.world_model.recurrent_model.discretizer_scheduler.step()
 
@@ -196,17 +200,18 @@ class DreamerV2(RlAgent):
             {
                 'epoch': epoch_num,
                 'world_model_state_dict': self.world_model.state_dict(),
-                'world_model_optimizer_state_dict': self.world_model_optimizer.state_dict(),
+                'world_model_optimizer_state_dict': self.world_model_optimizer.optimizer.state_dict(),
                 'actor_state_dict': self.actor.state_dict(),
                 'critic_state_dict': self.critic.state_dict(),
-                'actor_optimizer_state_dict': self.actor_optimizer.state_dict(),
-                'critic_optimizer_state_dict': self.critic_optimizer.state_dict(),
+                'actor_optimizer_state_dict': self.actor_optimizer.optimizer.state_dict(),
+                'critic_optimizer_state_dict': self.critic_optimizer.optimizer.state_dict(),
                 'losses': losses
             }, f'dreamerV2-{epoch_num}-{losses["total"]}.ckpt')
 
     def load_ckpt(self, ckpt_path: Path):
         ckpt = torch.load(ckpt_path)
         self.world_model.load_state_dict(ckpt['world_model_state_dict'])
+        # FIXME: doesn't work for optimizers
         self.world_model_optimizer.load_state_dict(
             ckpt['world_model_optimizer_state_dict'])
         self.actor.load_state_dict(ckpt['actor_state_dict'])

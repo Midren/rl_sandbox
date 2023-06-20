@@ -1,40 +1,66 @@
 import typing as t
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from unpackable import unpack
 
+import torch
 import numpy as np
-from nptyping import Bool, Float, Int, NDArray, Shape
+from jaxtyping import Bool, Float, Int
 
-Observation = NDArray[Shape["*,*,3"], Int]
-State = NDArray[Shape["*"], Float] | Observation
-Action = NDArray[Shape["*"], Int]
+Observation = Int[torch.Tensor, 'n n 3']
+State = Float[torch.Tensor, 'n']
+Action = Int[torch.Tensor, 'n']
 
-Observations = NDArray[Shape["*,*,*,3"], Int]
-States = NDArray[Shape["*,*"], Float] | Observations
-Actions = NDArray[Shape["*,*"], Int]
-Rewards = NDArray[Shape["*"], Float]
-TerminationFlags = NDArray[Shape["*"], Bool]
+Observations = Int[torch.Tensor, 'batch n n 3']
+States = Float[torch.Tensor, 'batch n']
+Actions = Int[torch.Tensor, 'batch n']
+Rewards = Float[torch.Tensor, 'batch']
+TerminationFlags = Bool[torch.Tensor, 'batch']
 IsFirstFlags = TerminationFlags
 
+@dataclass
+class EnvStep:
+    obs: Observation
+    action: Action
+    reward: float
+    is_finished: bool
+    is_first: bool
+    additional_data: dict[str, Float[torch.Tensor, '...']] = field(default_factory=dict)
 
 @dataclass
 class Rollout:
-    states: States
+    obs: Observations
     actions: Actions
     rewards: Rewards
-    next_states: States
     is_finished: TerminationFlags
-    observations: t.Optional[Observations] = None
+    is_first: IsFirstFlags
+    additional_data: dict[str, Float[torch.Tensor, 'batch ...']] = field(default_factory=dict)
 
     def __len__(self):
-        return len(self.states)
+        return len(self.obs)
 
-# TODO: make buffer concurrent-friendly
+    def to(self, device: str, non_blocking: bool = True):
+        self.obs = self.obs.to(device, non_blocking=True)
+        self.actions = self.actions.to(device, non_blocking=True)
+        self.rewards = self.rewards.to(device, non_blocking=True)
+        self.is_finished = self.is_finished.to(device, non_blocking=True)
+        self.is_first = self.is_first.to(device, non_blocking=True)
+        for k, v in self.additional_data.items():
+            self.additional_data[k] = v.to(device, non_blocking = True)
+        if not non_blocking:
+            torch.cuda.current_stream().synchronize()
+        return self
+
+@dataclass
+class RolloutChunks(Rollout):
+    pass
+
 class ReplayBuffer:
 
     def __init__(self, max_len=2e6,
                        prioritize_ends: bool = False,
                        min_ep_len: int = 1,
+                       preprocess_func: t.Callable[[Rollout], Rollout] = lambda x: x,
                        device: str = 'cpu'):
         self.rollouts: deque[Rollout] = deque()
         self.rollouts_len: deque[int] = deque()
@@ -44,17 +70,15 @@ class ReplayBuffer:
         self.max_len = max_len
         self.total_num = 0
         self.device = device
+        self.preprocess_func = preprocess_func
 
     def __len__(self):
         return self.total_num
 
     def add_rollout(self, rollout: Rollout):
-        if len(rollout.next_states) <= self.min_ep_len:
+        if len(rollout.obs) <= self.min_ep_len:
             return
-        # NOTE: only last next state is stored, all others are induced
-        #       from state on next step
-        rollout.next_states = np.expand_dims(rollout.next_states[-1], 0)
-        self.rollouts.append(rollout)
+        self.rollouts.append(self.preprocess_func(rollout).to(device='cpu'))
         self.total_num += len(self.rollouts[-1].rewards)
         self.rollouts_len.append(len(self.rollouts[-1].rewards))
 
@@ -66,21 +90,29 @@ class ReplayBuffer:
     # Add sample expects that each subsequent sample
     # will be continuation of last rollout util termination flag true
     # is encountered
-    def add_sample(self, s: State, a: Action, r: float, n: State, f: bool):
+    def add_sample(self, env_step: EnvStep):
+        s, a, r, n, f, additional = unpack(env_step)
         if self.curr_rollout is None:
-            self.curr_rollout = Rollout([s], [a], [r], None, [f])
+            self.curr_rollout = Rollout([s], [a], [r], [n], [f], {k: [v] for k,v in additional.items()})
         else:
-            self.curr_rollout.states.append(s)
+            self.curr_rollout.obs.append(s)
             self.curr_rollout.actions.append(a)
             self.curr_rollout.rewards.append(r)
-            self.curr_rollout.is_finished.append(f)
+            self.curr_rollout.is_finished.append(n)
+            self.curr_rollout.is_first.append(f)
+            for k,v in additional.items():
+                self.curr_rollout.additional_data[k].append(v)
 
             if f:
                 self.add_rollout(
-                    Rollout(np.array(self.curr_rollout.states),
-                            np.array(self.curr_rollout.actions).reshape(len(self.curr_rollout.actions), -1),
-                            np.array(self.curr_rollout.rewards, dtype=np.float32),
-                            np.array([n]), np.array(self.curr_rollout.is_finished)))
+                    Rollout(
+                        torch.stack(self.curr_rollout.obs),
+                        torch.stack(self.curr_rollout.actions).reshape(-1, 1),
+                        torch.Tensor(self.curr_rollout.rewards),
+                        torch.Tensor(self.curr_rollout.is_finished),
+                        torch.Tensor(self.curr_rollout.is_first),
+                        {k: torch.stack(v) for k,v in self.curr_rollout.additional_data.items()})
+                        )
                 self.curr_rollout = None
 
     def can_sample(self, num: int):
@@ -90,21 +122,13 @@ class ReplayBuffer:
         self,
         batch_size: int,
         cluster_size: int = 1
-    ) -> tuple[States, Actions, Rewards, States, TerminationFlags, IsFirstFlags]:
+    ) -> RolloutChunks:
         # NOTE: constant creation of numpy arrays from self.rollout_len seems terrible for me
-        s, a, r, n, t, is_first = [], [], [], [], [], []
-        do_add_curr = self.curr_rollout is not None and len(self.curr_rollout.states) > (cluster_size * (self.prioritize_ends + 1))
-        tot = self.total_num + (len(self.curr_rollout.states) if do_add_curr else 0)
-        r_indeces = np.random.choice(len(self.rollouts) + int(do_add_curr),
-                                     batch_size,
-                                     p=np.array(self.rollouts_len + deque([len(self.curr_rollout.states)] if do_add_curr else [])) / tot)
+        s, a, r, t, is_first, additional = [], [], [], [], [], {}
+        r_indeces = np.random.choice(len(self.rollouts), batch_size, p=np.array(self.rollouts_len) / self.total_num)
         s_indeces = []
         for r_idx in r_indeces:
-            if r_idx != len(self.rollouts):
-                rollout, r_len = self.rollouts[r_idx], self.rollouts_len[r_idx]
-            else:
-                # -1 because we don't have next_state on terminal
-                rollout, r_len = self.curr_rollout, len(self.curr_rollout.states) - 1
+            rollout, r_len = self.rollouts[r_idx], self.rollouts_len[r_idx]
 
             assert r_len > cluster_size - 1, "Rollout it too small"
             max_idx = r_len - cluster_size + 1
@@ -114,25 +138,31 @@ class ReplayBuffer:
                 s_idx = np.random.choice(max_idx, 1).item()
             s_indeces.append(s_idx)
 
-            if r_idx == len(self.rollouts):
-                r_len += 1
-                # FIXME: hot-fix for 1d action space, better to find smarter solution
-                actions = np.array(rollout.actions[s_idx:s_idx + cluster_size]).reshape(cluster_size, -1)
-            else:
-                actions = rollout.actions[s_idx:s_idx + cluster_size]
-
-            is_first.append(np.zeros(cluster_size))
+            is_first.append(torch.zeros(cluster_size))
             if s_idx == 0:
                 is_first[-1][0] = 1
-            s.append(rollout.states[s_idx:s_idx + cluster_size])
-            a.append(actions)
+
+            s.append(rollout.obs[s_idx:s_idx + cluster_size])
+            a.append(rollout.actions[s_idx:s_idx + cluster_size])
             r.append(rollout.rewards[s_idx:s_idx + cluster_size])
             t.append(rollout.is_finished[s_idx:s_idx + cluster_size])
-            if s_idx != r_len - cluster_size:
-                n.append(rollout.states[s_idx+1:s_idx+1 + cluster_size])
-            else:
-                if cluster_size != 1:
-                    n.append(rollout.states[s_idx+1:s_idx+1 + cluster_size - 1])
-                n.append(rollout.next_states)
-        return (np.concatenate(s), np.concatenate(a), np.concatenate(r, dtype=np.float32),
-            np.concatenate(n), np.concatenate(t), np.concatenate(is_first))
+            for k,v in rollout.additional_data.items():
+                if k not in additional:
+                    additional[k] = []
+                additional[k].append(v[s_idx:s_idx + cluster_size])
+
+        return RolloutChunks(
+                obs=torch.cat(s),
+                actions=torch.cat(a),
+                rewards=torch.cat(r).float(),
+                is_finished=torch.cat(t),
+                is_first=torch.cat(is_first),
+                additional_data={k: torch.cat(v) for k,v in additional.items()}
+                ).to(self.device, non_blocking=True)
+
+
+# TODO:
+# [X] Rewrite to use only torch containers
+# [X] Add preprocessing step on adding to replay buffer
+# [X] Add possibility to store additional auxilary data (dino encodings)
+# [ ] (Optional) Utilize torch's dataloader for async sampling

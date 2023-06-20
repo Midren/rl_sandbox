@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 from nptyping import Float, NDArray, Shape
 from pathlib import Path
 
@@ -13,7 +14,7 @@ class RandomAgent(RlAgent):
         self.action_space = env.action_space
 
     def get_action(self, obs: State) -> Action | NDArray[Shape["*"],Float]:
-        return self.action_space.sample()
+        return torch.from_numpy(np.array(self.action_space.sample()))
 
     def train(self, s: States, a: Actions, r: Rewards, next: States, is_finished: TerminationFlags):
         return dict()
