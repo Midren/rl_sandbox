@@ -20,7 +20,8 @@ class WorldModel(nn.Module):
     def __init__(self, batch_cluster_size, latent_dim, latent_classes, rssm_dim,
                  actions_num, kl_loss_scale, kl_loss_balancing, kl_free_nats,
                  discrete_rssm, predict_discount, layer_norm: bool, encode_vit: bool,
-                 decode_vit: bool, vit_l2_ratio: float, slots_num: int, slots_iter_num: int, use_prev_slots: bool = True):
+                 decode_vit: bool, vit_l2_ratio: float, slots_num: int, slots_iter_num: int, use_prev_slots: bool = True,
+                 mask_combination: str = 'soft'):
         super().__init__()
         self.use_prev_slots = use_prev_slots
         self.register_buffer('kl_free_nats', kl_free_nats * torch.ones(1))
@@ -30,6 +31,7 @@ class WorldModel(nn.Module):
         self.latent_dim = latent_dim
         self.latent_classes = latent_classes
         self.slots_num = slots_num
+        self.mask_combination = mask_combination
         self.state_size = slots_num * (rssm_dim + latent_dim * latent_classes)
 
         self.cluster_size = batch_cluster_size
@@ -125,6 +127,18 @@ class WorldModel(nn.Module):
                                                   layer_norm=layer_norm,
                                                   final_activation=DistLayer('binary'))
         self.reward_normalizer = Normalizer(momentum=1.00, scale=1.0, eps=1e-8)
+
+    def slot_mask(self, masks: torch.Tensor) -> torch.Tensor:
+        match self.mask_combination:
+            case 'soft':
+                img_mask = F.softmax(masks, dim=1)
+            case 'hard':
+                img_mask = F.one_hot(masks.argmax(dim=1), num_classes=masks.shape[1]).permute(0, 4, 1, 2, 3)
+            case 'qmix':
+                raise NotImplementedError
+            case _:
+                raise NotImplementedError
+        return img_mask
 
     def precalc_data(self, obs: torch.Tensor) -> dict[str, torch.Tensor]:
         if not self.decode_vit:
@@ -266,7 +280,7 @@ class WorldModel(nn.Module):
 
         if not self.decode_vit:
             decoded_imgs, masks = self.image_predictor(posterior.combined_slots.transpose(0, 1).flatten(0, 2)).reshape(b, -1, 4, h, w).split([3, 1], dim=2)
-            img_mask = F.softmax(masks, dim=1)
+            img_mask = self.slot_mask(masks)
             decoded_imgs = decoded_imgs * img_mask
             x_r = td.Independent(td.Normal(torch.sum(decoded_imgs, dim=1), 1.0), 3)
 
@@ -274,20 +288,20 @@ class WorldModel(nn.Module):
         else:
             if self.vit_l2_ratio != 1.0:
                 decoded_imgs, masks = self.image_predictor(posterior.combined_slots.transpose(0, 1).flatten(0, 2)).reshape(b, -1, 4, h, w).split([3, 1], dim=2)
-                img_mask = F.softmax(masks, dim=1)
+                img_mask = self.slot_mask(masks)
                 decoded_imgs = decoded_imgs * img_mask
                 x_r = td.Independent(td.Normal(torch.sum(decoded_imgs, dim=1), 1.0), 3)
                 img_rec = -x_r.log_prob(obs).float().mean()
             else:
                 img_rec = 0
                 decoded_imgs_detached, masks = self.image_predictor(posterior.combined_slots.transpose(0, 1).flatten(0, 2).detach()).reshape(b, -1, 4, h, w).split([3, 1], dim=2)
-                img_mask = F.softmax(masks, dim=1)
+                img_mask = self.slot_mask(masks)
                 decoded_imgs_detached = decoded_imgs_detached * img_mask
                 x_r_detached = td.Independent(td.Normal(torch.sum(decoded_imgs_detached, dim=1), 1.0), 3)
                 losses['loss_reconstruction_img'] = -x_r_detached.log_prob(obs).float().mean()
 
             decoded_feats, masks = self.dino_predictor(posterior.combined_slots.transpose(0, 1).flatten(0, 1)).reshape(b, -1, self.vit_feat_dim+1, 8, 8).split([self.vit_feat_dim, 1], dim=2)
-            feat_mask = F.softmax(masks, dim=1)
+            feat_mask = self.slot_mask(masks)
             decoded_feats = decoded_feats * feat_mask
             d_pred = td.Independent(td.Normal(torch.sum(decoded_feats, dim=1), 1.0), 3)
             losses['loss_reconstruction'] = (self.vit_l2_ratio * -d_pred.log_prob(d_features.reshape(b, self.vit_feat_dim, 8, 8)).float().mean() +

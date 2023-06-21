@@ -134,7 +134,8 @@ class DreamerV2(RlAgent):
 
     def train(self, rollout_chunks: RolloutChunks):
         obs, a, r, is_finished, is_first, additional = unpack(rollout_chunks)
-        torch.cuda.current_stream().synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.current_stream().synchronize()
         # obs = self.preprocess_obs(self.from_np(obs))
         if self.is_discrete:
             a = F.one_hot(a.to(torch.int64), num_classes=self.actions_num).squeeze()

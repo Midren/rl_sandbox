@@ -21,7 +21,11 @@ class WorldModel(nn.Module):
                  actions_num, kl_loss_scale, kl_loss_balancing, kl_free_nats,
                  discrete_rssm, predict_discount, layer_norm: bool, encode_vit: bool,
                  decode_vit: bool, vit_l2_ratio: float, slots_num: int, slots_iter_num: int, use_prev_slots: bool = True,
-                 full_qk_from: int = 1, symmetric_qk: bool = False, attention_block_num: int = 3):
+                 full_qk_from: int = 1,
+                 symmetric_qk: bool = False,
+                 attention_block_num: int = 3,
+                 mask_combination: str = 'soft',
+                 per_slot_rec_loss: bool = False):
         super().__init__()
         self.use_prev_slots = use_prev_slots
         self.register_buffer('kl_free_nats', kl_free_nats * torch.ones(1))
@@ -31,6 +35,7 @@ class WorldModel(nn.Module):
         self.latent_dim = latent_dim
         self.latent_classes = latent_classes
         self.slots_num = slots_num
+        self.mask_combination = mask_combination
         self.state_size = slots_num * (rssm_dim + latent_dim * latent_classes)
 
         self.cluster_size = batch_cluster_size
@@ -41,6 +46,7 @@ class WorldModel(nn.Module):
         self.encode_vit = encode_vit
         self.decode_vit = decode_vit
         self.vit_l2_ratio = vit_l2_ratio
+        self.per_slot_rec_loss = per_slot_rec_loss
 
         self.n_dim = 384
 
@@ -129,6 +135,18 @@ class WorldModel(nn.Module):
                                                   layer_norm=layer_norm,
                                                   final_activation=DistLayer('binary'))
         self.reward_normalizer = Normalizer(momentum=1.00, scale=1.0, eps=1e-8)
+
+    def slot_mask(self, masks: torch.Tensor) -> torch.Tensor:
+        match self.mask_combination:
+            case 'soft':
+                img_mask = F.softmax(masks, dim=1)
+            case 'hard':
+                img_mask = F.one_hot(masks.argmax(dim=1), num_classes=masks.shape[1]).permute(0, 4, 1, 2, 3)
+            case 'qmix':
+                raise NotImplementedError
+            case _:
+                raise NotImplementedError
+        return img_mask
 
     def precalc_data(self, obs: torch.Tensor) -> dict[str, torch.Tensor]:
         if not self.decode_vit:
@@ -272,36 +290,73 @@ class WorldModel(nn.Module):
         r_pred = self.reward_predictor(posterior.combined.transpose(0, 1))
         f_pred = self.discount_predictor(posterior.combined.transpose(0, 1))
 
-        losses['loss_reconstruction_img'] = torch.Tensor([0]).to(obs.device)
+        losses['loss_reconstruction_img'] = torch.tensor(0, device=obs.device)
 
         if not self.decode_vit:
             decoded_imgs, masks = self.image_predictor(posterior.combined_slots.transpose(0, 1).flatten(0, 2)).reshape(b, -1, 4, h, w).split([3, 1], dim=2)
-            img_mask = F.softmax(masks, dim=1)
-            decoded_imgs = decoded_imgs * img_mask
-            x_r = td.Independent(td.Normal(torch.sum(decoded_imgs, dim=1), 1.0), 3)
+            img_mask = self.slot_mask(masks)
 
-            losses['loss_reconstruction'] = -x_r.log_prob(obs).float().mean()
-        else:
-            if self.vit_l2_ratio != 1.0:
-                decoded_imgs, masks = self.image_predictor(posterior.combined_slots.transpose(0, 1).flatten(0, 2)).reshape(b, -1, 4, h, w).split([3, 1], dim=2)
-                img_mask = F.softmax(masks, dim=1)
+            if self.per_slot_rec_loss:
+                l2_loss = (img_mask * ((decoded_imgs - obs.unsqueeze(1))**2)).mean(dim=[2, 3, 4])
+                normalizing_factor = (torch.prod(torch.tensor(obs.shape[1:]))) / img_mask.sum(dim=[2, 3, 4])
+                # magic constant that describes the difference between log_prob and mse losses
+                img_rec = (l2_loss * normalizing_factor).sum(dim=1).mean() * self.slots_num * 8
+                decoded_imgs = decoded_imgs * img_mask
+            else:
                 decoded_imgs = decoded_imgs * img_mask
                 x_r = td.Independent(td.Normal(torch.sum(decoded_imgs, dim=1), 1.0), 3)
                 img_rec = -x_r.log_prob(obs).float().mean()
+
+            losses['loss_reconstruction'] = img_rec
+        else:
+            if self.vit_l2_ratio != 1.0:
+                decoded_imgs, masks = self.image_predictor(posterior.combined_slots.transpose(0, 1).flatten(0, 2)).reshape(b, -1, 4, h, w).split([3, 1], dim=2)
+                img_mask = self.slot_mask(masks)
+
+                if self.per_slot_rec_loss:
+                    l2_loss = (img_mask*((decoded_imgs - obs.unsqueeze(1))**2)).mean(dim=[2, 3, 4])
+                    normalizing_factor = (torch.prod(torch.tensor(obs.shape[1:])))/img_mask.sum(dim=[2, 3, 4])
+                    # magic constant that describes the difference between log_prob and mse losses
+                    img_rec = (l2_loss * normalizing_factor).sum(dim=1).mean() * self.slots_num * 8
+                    decoded_imgs = decoded_imgs * img_mask
+                else:
+                    decoded_imgs = decoded_imgs * img_mask
+                    x_r = td.Independent(td.Normal(torch.sum(decoded_imgs, dim=1), 1.0), 3)
+                    img_rec = -x_r.log_prob(obs).float().mean()
             else:
                 img_rec = 0
                 decoded_imgs_detached, masks = self.image_predictor(posterior.combined_slots.transpose(0, 1).flatten(0, 2).detach()).reshape(b, -1, 4, h, w).split([3, 1], dim=2)
-                img_mask = F.softmax(masks, dim=1)
-                decoded_imgs_detached = decoded_imgs_detached * img_mask
-                x_r_detached = td.Independent(td.Normal(torch.sum(decoded_imgs_detached, dim=1), 1.0), 3)
-                losses['loss_reconstruction_img'] = -x_r_detached.log_prob(obs).float().mean()
+                img_mask = self.slot_mask(masks)
+
+                if self.per_slot_rec_loss:
+                    l2_loss = (img_mask*((decoded_imgs_detached - obs.unsqueeze(1))**2)).mean(dim=[2, 3, 4])
+                    normalizing_factor = (torch.prod(torch.tensor(obs.shape[1:])))/img_mask.sum(dim=[2, 3, 4])
+                    # magic constant that describes the difference between log_prob and mse losses
+                    img_rec_detached = (l2_loss * normalizing_factor).sum(dim=1).mean() * self.slots_num * 8
+                else:
+                    decoded_imgs_detached = decoded_imgs_detached * img_mask
+                    x_r_detached = td.Independent(td.Normal(torch.sum(decoded_imgs_detached, dim=1), 1.0), 3)
+                    img_rec_detached = -x_r_detached.log_prob(obs).float().mean()
+
+                losses['loss_reconstruction_img'] = img_rec_detached
 
             decoded_feats, masks = self.dino_predictor(posterior.combined_slots.transpose(0, 1).flatten(0, 1)).reshape(b, -1, self.vit_feat_dim+1, 8, 8).split([self.vit_feat_dim, 1], dim=2)
-            feat_mask = F.softmax(masks, dim=1)
-            decoded_feats = decoded_feats * feat_mask
-            d_pred = td.Independent(td.Normal(torch.sum(decoded_feats, dim=1), 1.0), 3)
-            losses['loss_reconstruction'] = (self.vit_l2_ratio * -d_pred.log_prob(d_features.reshape(b, self.vit_feat_dim, 8, 8)).float().mean() +
-                                            (1-self.vit_l2_ratio) * img_rec)
+            feat_mask = self.slot_mask(masks)
+
+            d_obs = d_features.reshape(b, self.vit_feat_dim, 8, 8)
+
+            if self.per_slot_rec_loss:
+                l2_loss = (feat_mask*((decoded_feats - d_obs.unsqueeze(1))**2)).mean(dim=[2, 3, 4])
+                normalizing_factor = (torch.prod(torch.tensor(d_obs.shape[1:])))/feat_mask.sum(dim=[2, 3, 4]).clamp(min=1)
+                # # magic constant that describes the difference between log_prob and mse losses
+                d_rec = (l2_loss * normalizing_factor).sum(dim=1).mean()*self.slots_num * 4
+                decoded_feats = decoded_feats * feat_mask
+            else:
+                decoded_feats = decoded_feats * feat_mask
+                d_pred = td.Independent(td.Normal(torch.sum(decoded_feats, dim=1), 1.0), 3)
+                d_rec = -d_pred.log_prob(d_obs).float().mean()
+
+            losses['loss_reconstruction'] = (self.vit_l2_ratio * d_rec + (1-self.vit_l2_ratio) * img_rec)
 
         prior_logits = prior.stoch_logits
         posterior_logits = posterior.stoch_logits

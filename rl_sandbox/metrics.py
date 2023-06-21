@@ -203,7 +203,7 @@ class SlottedDreamerMetricsEvaluator(DreamerMetricsEvaluator):
 
             decoded_imgs, masks = self.agent.world_model.image_predictor(state.combined_slots.flatten(0, 1)).reshape(1, -1, 4, 64, 64).split([3, 1], dim=2)
             # TODO: try the scaling of softmax as in attention
-            img_mask = F.softmax(masks, dim=1)
+            img_mask = self.agent.world_model.slot_mask(masks)
             decoded_imgs = decoded_imgs * img_mask
             video_r = torch.sum(decoded_imgs, dim=1)
 
@@ -223,7 +223,7 @@ class SlottedDreamerMetricsEvaluator(DreamerMetricsEvaluator):
 
             # video_r = self.agent.world_model.image_predictor(states.combined_slots[1:]).mode
             decoded_imgs, masks = self.agent.world_model.image_predictor(states.combined_slots[1:].flatten(0, 1)).reshape(-1, self.agent.world_model.slots_num, 4, 64, 64).split([3, 1], dim=2)
-            img_mask = F.softmax(masks, dim=1)
+            img_mask = self.agent.world_model.slot_mask(masks)
             decoded_imgs = decoded_imgs * img_mask
             video_r = torch.sum(decoded_imgs, dim=1)
 
@@ -292,7 +292,7 @@ class SlottedDinoDreamerMetricsEvaluator(SlottedDreamerMetricsEvaluator):
 
             decoded_imgs, masks = self.agent.world_model.image_predictor(state.combined_slots.flatten(0, 1)).reshape(1, -1, 4, 64, 64).split([3, 1], dim=2)
             # TODO: try the scaling of softmax as in attention
-            img_mask = F.softmax(masks, dim=1)
+            img_mask = self.agent.world_model.slot_mask(masks)
             decoded_imgs = decoded_imgs * img_mask
             video_r = torch.sum(decoded_imgs, dim=1)
 
@@ -319,7 +319,7 @@ class SlottedDinoDreamerMetricsEvaluator(SlottedDreamerMetricsEvaluator):
 
             # video_r = self.agent.world_model.image_predictor(states.combined_slots[1:]).mode
             decoded_imgs, masks = self.agent.world_model.image_predictor(states.combined_slots[1:].flatten(0, 1)).reshape(-1, self.agent.world_model.slots_num, 4, 64, 64).split([3, 1], dim=2)
-            img_mask = F.softmax(masks, dim=1)
+            img_mask = self.agent.world_model.slot_mask(masks)
             decoded_imgs = decoded_imgs * img_mask
             video_r = torch.sum(decoded_imgs, dim=1)
 
