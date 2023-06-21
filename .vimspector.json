@@ -40,7 +40,7 @@
       "extends": "python-base",
       "configuration": {
         "program": "rl_sandbox/train.py",
-        "args": []
+        "args": ["logger.type='tensorboard'", "training.prefill=0", "training.batch_size=4"]
       }
     },
     "Run dino": {

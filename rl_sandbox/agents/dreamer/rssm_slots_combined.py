@@ -150,6 +150,9 @@ class RSSM(nn.Module):
                       latent_dim * self.latent_classes),  # Dreamer 'obs_dist'
             View((1, -1, latent_dim, self.latent_classes)))
 
+    def on_train_step(self):
+        pass
+
     def estimate_stochastic_latent(self, prev_determ: torch.Tensor):
         dists_per_model = [model(prev_determ) for model in self.ensemble_prior_estimator]
         # NOTE: Maybe something smarter can be used instead of

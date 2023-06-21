@@ -10,14 +10,13 @@ device_type: cuda
 
 logger:
   type: tensorboard
-  message: Cartpole 4 slots, 384 n_dim, 80 rssm dims, 22x22 stoch
+  message: Cartpole with slot attention, 1e3 kl, 2 iter num, free nats
   log_grads: false
 
 training:
   checkpoint_path: null
   steps: 1e6
-  val_logs_every: 5e4
-
+  val_logs_every: 1e4
 
 validation:
   rollout_num: 5

@@ -7,6 +7,7 @@ from torch import nn
 import torch.nn.functional as F
 
 from rl_sandbox.agents.dreamer import Dist, View, GRUCell
+from rl_sandbox.utils.schedulers import LinearScheduler
 
 
 @dataclass
@@ -74,6 +75,9 @@ class RSSM(nn.Module):
                  latent_classes,
                  discrete_rssm,
                  norm_layer: nn.LayerNorm | nn.Identity,
+                 full_qk_from: int = 1,
+                 symmetric_qk: bool = False,
+                 attention_block_num: int = 3,
                  embed_size=2 * 2 * 384):
         super().__init__()
         self.latent_dim = latent_dim
@@ -81,6 +85,8 @@ class RSSM(nn.Module):
         self.ensemble_num = 1
         self.hidden_size = hidden_size
         self.discrete_rssm = discrete_rssm
+
+        self.symmetric_qk = symmetric_qk
 
         # Calculate deterministic state from prev stochastic, prev action and prev deterministic
         self.pre_determ_recurrent = nn.Sequential(
@@ -122,9 +128,13 @@ class RSSM(nn.Module):
         self.fc = nn.Linear(hidden_size, hidden_size)
         self.fc_norm = nn.LayerNorm(hidden_size)
 
-        self.attention_block_num = 3
+        self.attention_scheduler = LinearScheduler(0.0, 1.0, full_qk_from)
+        self.attention_block_num = attention_block_num
         self.att_scale = hidden_size**(-0.5)
         self.eps = 1e-8
+
+    def on_train_step(self):
+        self.attention_scheduler.step()
 
     def estimate_stochastic_latent(self, prev_determ: torch.Tensor):
         dists_per_model = [model(prev_determ) for model in self.ensemble_prior_estimator]
@@ -156,14 +166,21 @@ class RSSM(nn.Module):
         # Experiment, when only stochastic part is affected and deterministic is not touched
         # We keep flow of gradients through determ block, but updating it with stochastic part
         for _ in range(self.attention_block_num):
-            q, k, v = self.hidden_attention_proj(self.pre_norm(determ_post)).chunk(3, dim=-1) # 1xBxSlots_numxHidden_size
+            q, k, v = self.hidden_attention_proj(self.pre_norm(determ_post)).chunk(3, dim=-1) #
+            if self.symmetric_qk:
+                k = q
             qk = torch.einsum('lbih,lbjh->lbij', q, k)
 
             attn = torch.softmax(self.att_scale * qk + self.eps, dim=-1)
             attn = attn / attn.sum(dim=-1, keepdim=True)
 
+            coeff = self.attention_scheduler.val
+            attn = coeff * attn + (1 - coeff) * torch.eye(q.shape[-2],device=q.device)
+
             updates = torch.einsum('lbij,lbjh->lbih', qk, v)
             determ_post = determ_post + self.fc(self.fc_norm(updates))
+
+        self.last_attention = attn.mean(dim=1).squeeze()
 
         # used for KL divergence
         predicted_stoch_logits = self.estimate_stochastic_latent(determ_post.reshape(determ_prior.shape)).reshape(prev_state.stoch_logits.shape)

@@ -142,6 +142,7 @@ class WorldModel(nn.Module):
 
     def calculate_loss(self, obs: torch.Tensor, a: torch.Tensor, r: torch.Tensor,
                        discount: torch.Tensor, first: torch.Tensor, additional: dict[str, torch.Tensor]):
+        self.recurrent_model.on_train_step()
         b, _, h, w = obs.shape  # s <- BxHxWx3
 
         embed = self.encoder(obs)

@@ -1,5 +1,5 @@
 defaults:
-  - agent: dreamer_v2_slotted_debug
+  - agent: dreamer_v2_crafter_slotted
   - env: crafter
   - training: crafter
   - _self_
@@ -10,7 +10,7 @@ device_type: cuda
 
 logger:
   type: tensorboard
-  message: Crafter 5 slots, 1e2 kl loss, 0.999 vit
+  message: Crafter 6 DINO slots
   log_grads: false
 
 training:

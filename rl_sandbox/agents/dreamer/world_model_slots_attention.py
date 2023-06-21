@@ -20,7 +20,8 @@ class WorldModel(nn.Module):
     def __init__(self, batch_cluster_size, latent_dim, latent_classes, rssm_dim,
                  actions_num, kl_loss_scale, kl_loss_balancing, kl_free_nats,
                  discrete_rssm, predict_discount, layer_norm: bool, encode_vit: bool,
-                 decode_vit: bool, vit_l2_ratio: float, slots_num: int, slots_iter_num: int, use_prev_slots: bool = True):
+                 decode_vit: bool, vit_l2_ratio: float, slots_num: int, slots_iter_num: int, use_prev_slots: bool = True,
+                 full_qk_from: int = 1, symmetric_qk: bool = False, attention_block_num: int = 3):
         super().__init__()
         self.use_prev_slots = use_prev_slots
         self.register_buffer('kl_free_nats', kl_free_nats * torch.ones(1))
@@ -50,7 +51,10 @@ class WorldModel(nn.Module):
             latent_classes,
             discrete_rssm,
             norm_layer=nn.Identity if layer_norm else nn.LayerNorm,
-            embed_size=self.n_dim)
+            embed_size=self.n_dim,
+            full_qk_from=full_qk_from,
+            symmetric_qk=symmetric_qk,
+            attention_block_num=attention_block_num)
         if encode_vit or decode_vit:
             # self.dino_vit = ViTFeat("/dino/dino_vitbase8_pretrain/dino_vitbase8_pretrain.pth", feat_dim=768, vit_arch='base', patch_size=8)
             self.dino_vit = ViTFeat("/dino/dino_deitsmall8_pretrain/dino_deitsmall8_pretrain.pth", feat_dim=384, vit_arch='small', patch_size=8)
@@ -136,7 +140,7 @@ class WorldModel(nn.Module):
             ToTensor = tv.transforms.Normalize((0.485, 0.456, 0.406),
                                                    (0.229, 0.224, 0.225))
             obs = ToTensor(obs + 0.5)
-        d_features = self.dino_vit(obs.unsqueeze(0)).squeeze()
+        d_features = self.dino_vit(obs)
         return {'d_features': d_features}
 
     def get_initial_state(self, batch_size: int = 1, seq_size: int = 1):
@@ -192,6 +196,7 @@ class WorldModel(nn.Module):
 
     def calculate_loss(self, obs: torch.Tensor, a: torch.Tensor, r: torch.Tensor,
                        discount: torch.Tensor, first: torch.Tensor, additional: dict[str, torch.Tensor]):
+        self.recurrent_model.on_train_step()
         b, _, h, w = obs.shape  # s <- BxHxWx3
 
         embed = self.encoder(obs)
@@ -229,6 +234,9 @@ class WorldModel(nn.Module):
             d_features = additional['d_features']
 
         prev_state, prev_slots = self.get_initial_state(b // self.cluster_size)
+
+        self.last_attn = torch.zeros((self.slots_num, self.slots_num), device=a_c.device)
+
         for t in range(self.cluster_size):
             # s_t <- 1xB^xHxWx3
             pre_slot_feature_t, a_t, first_t = pre_slot_features_c[:,
@@ -249,11 +257,14 @@ class WorldModel(nn.Module):
             prior, posterior, diff = self.recurrent_model.forward(
                 prev_state, slots_t.unsqueeze(0), a_t)
             prev_state = posterior
+            self.last_attn += self.recurrent_model.last_attention
 
             priors.append(prior)
             posteriors.append(posterior)
 
             # losses['loss_determ_recons'] += diff
+
+        self.last_attn /= self.cluster_size
 
         posterior = State.stack(posteriors)
         prior = State.stack(priors)
@@ -298,6 +309,7 @@ class WorldModel(nn.Module):
         losses['loss_discount_pred'] = -f_pred.log_prob(d_c).float().mean()
         losses['loss_kl_reg'] = KL(prior_logits, posterior_logits)
 
+        metrics['attention_coeff'] = torch.tensor(self.recurrent_model.attention_scheduler.val)
         metrics['reward_mean'] = r.mean()
         metrics['reward_std'] = r.std()
         metrics['reward_sae'] = (torch.abs(r_pred.mode - r_c)).mean()

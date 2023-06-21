@@ -1,7 +1,7 @@
 _target_: rl_sandbox.agents.DreamerV2
 
 imagination_horizon: 15
-batch_cluster_size: 50
+batch_cluster_size: 20
 layer_norm: true
 
 world_model:
@@ -45,7 +45,7 @@ wm_optim:
   _target_: rl_sandbox.utils.optimizer.Optimizer
   _partial_: true
   lr_scheduler: null
-  lr: 2e-4
+  lr: 1e-4
   eps: 1e-5
   weight_decay: 1e-6
   clip: 100
@@ -53,7 +53,7 @@ wm_optim:
 actor_optim:
   _target_: rl_sandbox.utils.optimizer.Optimizer
   _partial_: true
-  lr: 2e-4
+  lr: 1e-4
   eps: 1e-5
   weight_decay: 1e-6
   clip: 100
@@ -61,7 +61,7 @@ actor_optim:
 critic_optim:
   _target_: rl_sandbox.utils.optimizer.Optimizer
   _partial_: true
-  lr: 2e-4
+  lr: 1e-4
   eps: 1e-5
   weight_decay: 1e-6
   clip: 100

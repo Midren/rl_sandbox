@@ -136,7 +136,7 @@ class WorldModel(nn.Module):
             ToTensor = tv.transforms.Normalize((0.485, 0.456, 0.406),
                                                    (0.229, 0.224, 0.225))
             obs = ToTensor(obs + 0.5)
-        d_features = self.dino_vit(obs.unsqueeze(0)).squeeze()
+        d_features = self.dino_vit(obs)
         return {'d_features': d_features}
 
     def get_initial_state(self, batch_size: int = 1, seq_size: int = 1):
@@ -192,6 +192,7 @@ class WorldModel(nn.Module):
 
     def calculate_loss(self, obs: torch.Tensor, a: torch.Tensor, r: torch.Tensor,
                        discount: torch.Tensor, first: torch.Tensor, additional: dict[str, torch.Tensor]):
+        self.recurrent_model.on_train_step()
         b, _, h, w = obs.shape  # s <- BxHxWx3
 
         embed = self.encoder(obs)

@@ -115,7 +115,6 @@ def main(cfg: DictConfig):
         ### Training and exploration
 
         for env_step in iter_rollout(env, agent):
-            # env_step = agent.preprocess(env_step)
             buff.add_sample(env_step)
 
             if global_step % cfg.training.train_every == 0:

@@ -166,6 +166,9 @@ class RSSM(nn.Module):
         idx = torch.randint(0, self.ensemble_num, ())
         return dists_per_model[0]
 
+    def on_train_step(self):
+        pass
+
     def predict_next(self,
                      prev_state: State,
                      action) -> State:

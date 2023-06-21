@@ -1,5 +1,5 @@
 defaults:
-  - agent: dreamer_v2_slotted_debug
+  - agent: dreamer_v2_crafter
   - env: crafter
   - training: crafter
   - _self_
@@ -10,13 +10,13 @@ device_type: cuda
 
 logger:
   type: tensorboard
-  message: Crafter 6 DINO slots, 32 latents, 256 rssm
+  message: Crafter default
   log_grads: false
 
 training:
   checkpoint_path: null
   steps: 1e6
-  val_logs_every: 2e4
+  val_logs_every: 5e2
 
 validation:
   rollout_num: 5
@@ -25,7 +25,7 @@ validation:
     - _target_: rl_sandbox.metrics.EpisodeMetricsEvaluator
       log_video: True
       _partial_: true
-    - _target_: rl_sandbox.metrics.SlottedDreamerMetricsEvaluator
+    - _target_: rl_sandbox.metrics.DreamerMetricsEvaluator
       _partial_: true
 
 debug:

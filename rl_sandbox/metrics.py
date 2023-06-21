@@ -161,10 +161,15 @@ class SlottedDreamerMetricsEvaluator(DreamerMetricsEvaluator):
         self._latent_probs += self.agent._state[0].stoch_dist.probs.squeeze().mean(dim=0)
 
     def on_episode(self, logger):
-        mu = self.agent.world_model.slot_attention.slots_mu
-        sigma = self.agent.world_model.slot_attention.slots_logsigma.exp()
+        wm = self.agent.world_model
+
+        mu = wm.slot_attention.slots_mu
+        sigma = wm.slot_attention.slots_logsigma.exp()
         mu_hist = torch.mean((mu - mu.squeeze(0).unsqueeze(1)) ** 2, dim=-1)
         sigma_hist = torch.mean((sigma - sigma.squeeze(0).unsqueeze(1)) ** 2, dim=-1)
+
+        if wm.recurrent_model.last_attention is not None:
+            logger.add_image('val/mixer_attention', wm.recurrent_model.last_attention, self.episode, dataformats='HW')
 
         logger.add_image('val/slot_attention_mu', mu_hist/mu_hist.max(), self.episode, dataformats='HW')
         logger.add_image('val/slot_attention_sigma', sigma_hist/sigma_hist.max(), self.episode, dataformats='HW')
