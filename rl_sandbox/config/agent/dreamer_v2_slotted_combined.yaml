@@ -1,7 +1,7 @@
 _target_: rl_sandbox.agents.DreamerV2
 
 imagination_horizon: 15
-batch_cluster_size: 50
+batch_cluster_size: 20
 layer_norm: true
 
 world_model:

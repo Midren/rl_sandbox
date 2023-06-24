@@ -19,9 +19,9 @@ world_model:
   discrete_rssm: false
   decode_vit: true
   full_qk_from: 1e6
-  symmetric_qk: false
+  symmetric_qk: true
   use_prev_slots: false
-  attention_block_num: 3
+  attention_block_num: 1
   vit_l2_ratio: 0.1
   encode_vit: false
   predict_discount: true

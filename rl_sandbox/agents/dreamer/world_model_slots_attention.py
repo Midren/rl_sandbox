@@ -141,7 +141,8 @@ class WorldModel(nn.Module):
             case 'soft':
                 img_mask = F.softmax(masks, dim=1)
             case 'hard':
-                img_mask = F.one_hot(masks.argmax(dim=1), num_classes=masks.shape[1]).permute(0, 4, 1, 2, 3)
+                probs = F.softmax(masks - masks.logsumexp(dim=1,keepdim=True), dim=1)
+                img_mask = F.one_hot(masks.argmax(dim=1), num_classes=masks.shape[1]).permute(0, 4, 1, 2, 3) + (probs - probs.detach())
             case 'qmix':
                 raise NotImplementedError
             case _:

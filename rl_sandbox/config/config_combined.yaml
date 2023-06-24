@@ -10,16 +10,16 @@ device_type: cuda
 
 logger:
   type: tensorboard
-  message: Crafter combined slotted
+  message: Crafter combined slotted 10x reconstruction
   log_grads: false
 
 training:
   checkpoint_path: null
   steps: 1e6
-  val_logs_every: 1e4
+  val_logs_every: 5e3
 
 validation:
-  rollout_num: 5
+  rollout_num: 3
   visualize: true
   metrics:
     - _target_: rl_sandbox.metrics.EpisodeMetricsEvaluator
@@ -32,12 +32,13 @@ debug:
   profiler: false
 
 hydra:
-  #mode: MULTIRUN
-  mode: RUN
+  mode: MULTIRUN
+  #mode: RUN
   launcher:
-    n_jobs: 1
-  #sweeper:
-  #  params:
-  #    agent.world_model.per_slot_rec_loss: false,true
-  #    agent.world_model.mask_combination: soft,hard
-  #    agent.world_model.kl_loss_scale: 1e2
+    n_jobs: 8
+  sweeper:
+    params:
+      agent.world_model.per_slot_rec_loss: true
+      agent.world_model.mask_combination: soft
+      agent.world_model.kl_loss_scale: 1e2,1e4
+      agent.world_model.vit_l2_ratio: 0.1,0.01,0.9,0.99

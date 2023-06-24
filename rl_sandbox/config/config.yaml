@@ -1,5 +1,5 @@
 defaults:
-  - agent: dreamer_v2_crafter
+  - agent: dreamer_v2_slotted_combined
   - env: crafter
   - training: crafter
   - _self_
@@ -10,22 +10,22 @@ device_type: cuda
 
 logger:
   type: tensorboard
-  message: Crafter default
+  message: Crafter combined slotted
   log_grads: false
 
 training:
   checkpoint_path: null
   steps: 1e6
-  val_logs_every: 5e2
+  val_logs_every: 1e4
 
 validation:
-  rollout_num: 5
+  rollout_num: 3
   visualize: true
   metrics:
     - _target_: rl_sandbox.metrics.EpisodeMetricsEvaluator
       log_video: True
       _partial_: true
-    - _target_: rl_sandbox.metrics.DreamerMetricsEvaluator
+    - _target_: rl_sandbox.metrics.SlottedDreamerMetricsEvaluator
       _partial_: true
 
 debug:
@@ -38,5 +38,8 @@ hydra:
     n_jobs: 8
   sweeper:
     params:
-      agent.world_model.kl_loss_scale: 1e1,1e2,1e3,1e4
-      agent.world_model.vit_l2_ratio: 0.1,0.9
+      agent.world_model.per_slot_rec_loss: false,true
+      agent.world_model.mask_combination: soft,hard
+      agent.world_model.kl_loss_scale: 1e3
+      agent.world_model.vit_l2_ratio: 0.9
+

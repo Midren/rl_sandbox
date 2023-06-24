@@ -36,7 +36,7 @@ hydra:
   mode: RUN
   launcher:
     n_jobs: 1
-    #n_jobs: 8
+  #  n_jobs: 8
   #sweeper:
   #  params:
   #    agent.world_model.full_qk_from: 1,1e6
