@@ -168,7 +168,7 @@ class SlottedDreamerMetricsEvaluator(DreamerMetricsEvaluator):
         mu_hist = torch.mean((mu - mu.squeeze(0).unsqueeze(1)) ** 2, dim=-1)
         sigma_hist = torch.mean((sigma - sigma.squeeze(0).unsqueeze(1)) ** 2, dim=-1)
 
-        if wm.recurrent_model.last_attention is not None:
+        if hasattr(wm.recurrent_model, 'last_attention'):
             logger.add_image('val/mixer_attention', wm.recurrent_model.last_attention, self.episode, dataformats='HW')
 
         logger.add_image('val/slot_attention_mu', mu_hist/mu_hist.max(), self.episode, dataformats='HW')

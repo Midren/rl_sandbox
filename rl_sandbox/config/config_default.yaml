@@ -1,7 +1,7 @@
 defaults:
-  - agent: dreamer_v2_slotted_debug
-  - env: dm_cartpole
-  - training: dm
+  - agent: dreamer_v2_crafter
+  - env: crafter
+  - training: crafter
   - _self_
   - override hydra/launcher: joblib
 
@@ -10,13 +10,13 @@ device_type: cuda
 
 logger:
   type: tensorboard
-  message: Cartpole with slot attention, 1e3 kl, 2 iter num, free nats
+  message: Crafter default
   log_grads: false
 
 training:
   checkpoint_path: null
   steps: 1e6
-  val_logs_every: 1e4
+  val_logs_every: 5e2
 
 validation:
   rollout_num: 5
@@ -25,7 +25,7 @@ validation:
     - _target_: rl_sandbox.metrics.EpisodeMetricsEvaluator
       log_video: True
       _partial_: true
-    - _target_: rl_sandbox.metrics.SlottedDreamerMetricsEvaluator
+    - _target_: rl_sandbox.metrics.DreamerMetricsEvaluator
       _partial_: true
 
 debug:
@@ -38,7 +38,7 @@ hydra:
     n_jobs: 1
   #sweeper:
   #  params:
+  #    agent.world_model._target_: rl_sandbox.agents.dreamer.world_model_slots_combined.WorldModel,rl_sandbox.agents.dreamer.world_model_slots_attention.WorldModel
+  #    agent.world_model.vit_l2_ratio: 0.1,0.5
   #    agent.world_model.kl_loss_scale: 1e1,1e2,1e3,1e4
   #    agent.world_model.vit_l2_ratio: 0.1,0.9
-
-

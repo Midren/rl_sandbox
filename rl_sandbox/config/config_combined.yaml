@@ -1,7 +1,7 @@
 defaults:
-  - agent: dreamer_v2_slotted_debug
-  - env: dm_cartpole
-  - training: dm
+  - agent: dreamer_v2_slotted_combined
+  - env: crafter
+  - training: crafter
   - _self_
   - override hydra/launcher: joblib
 
@@ -10,7 +10,7 @@ device_type: cuda
 
 logger:
   type: tensorboard
-  message: Cartpole with slot attention, 1e3 kl, 2 iter num, free nats
+  message: Crafter combined slotted
   log_grads: false
 
 training:
@@ -38,7 +38,6 @@ hydra:
     n_jobs: 1
   #sweeper:
   #  params:
-  #    agent.world_model.kl_loss_scale: 1e1,1e2,1e3,1e4
-  #    agent.world_model.vit_l2_ratio: 0.1,0.9
-
-
+  #    agent.world_model.per_slot_rec_loss: false,true
+  #    agent.world_model.mask_combination: soft,hard
+  #    agent.world_model.kl_loss_scale: 1e2

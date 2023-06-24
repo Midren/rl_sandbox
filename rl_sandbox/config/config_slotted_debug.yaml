@@ -25,7 +25,7 @@ validation:
     - _target_: rl_sandbox.metrics.EpisodeMetricsEvaluator
       log_video: True
       _partial_: true
-    - _target_: rl_sandbox.metrics.SlottedDinoDreamerMetricsEvaluator
+    - _target_: rl_sandbox.metrics.SlottedDreamerMetricsEvaluator
       _partial_: true
 
 debug:
@@ -35,10 +35,9 @@ hydra:
   #mode: MULTIRUN
   mode: RUN
   launcher:
-    #n_jobs: 4
     n_jobs: 1
   #sweeper:
   #  params:
-  #    agent.world_model.kl_loss_scale: 1e3
-      #agent.world_model.latent_dim: 22,32
-      #agent.world_model.rssm_dim: 128,256
+  #    agent.world_model.kl_loss_scale: 1e1,1e2,1e3,1e4
+  #    agent.world_model.vit_l2_ratio: 0.1,0.9
+

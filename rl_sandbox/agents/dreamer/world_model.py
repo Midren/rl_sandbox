@@ -113,7 +113,7 @@ class WorldModel(nn.Module):
                                                    (0.229, 0.224, 0.225))
             obs = ToTensor(obs + 0.5)
         with torch.no_grad():
-            d_features = self.dino_vit(obs.unsqueeze(0)).squeeze().cpu()
+            d_features = self.dino_vit(obs).cpu()
         return {'d_features': d_features}
 
     def get_initial_state(self, batch_size: int = 1, seq_size: int = 1):
