@@ -160,8 +160,7 @@ class GymEnv(Env):
             env_res = EnvStepResult(new_state, reward, terminated)
         else:
             env_res = ts
-        # FIXME: move to config the option
-        env_res.reward = np.tanh(rew + (env_res.reward or 0.0))
+        env_res.reward = rew + (env_res.reward or 0.0)
         return env_res
 
     def reset(self):

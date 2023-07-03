@@ -1,5 +1,6 @@
 _target_: rl_sandbox.agents.DreamerV2
 
+clip_rewards: tanh
 imagination_horizon: 15
 batch_cluster_size: 50
 layer_norm: true
@@ -9,7 +10,7 @@ world_model:
   _partial_: true
   batch_cluster_size: ${..batch_cluster_size}
   latent_dim: 32
-  latent_classes: 32
+  latent_classes: ${.latent_dim}
   rssm_dim: 1024
   kl_loss_scale: 1.0
   kl_loss_balancing: 0.8

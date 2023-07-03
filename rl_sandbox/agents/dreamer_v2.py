@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from torch import nn
 from torch.nn import functional as F
 import torchvision as tv
 from unpackable import unpack
@@ -20,6 +21,7 @@ class DreamerV2(RlAgent):
     def __init__(
             self,
             obs_space_num: list[int],  # NOTE: encoder/decoder will work only with 64x64 currently
+            clip_rewards: str,
             actions_num: int,
             world_model: t.Any,
             actor: t.Any,
@@ -40,6 +42,13 @@ class DreamerV2(RlAgent):
         self.imagination_horizon = imagination_horizon
         self.actions_num = actions_num
         self.is_discrete = (action_type != 'continuous')
+        match clip_rewards:
+            case 'identity':
+                self.reward_clipper = nn.Identity()
+            case 'tanh':
+                self.reward_clipper = nn.Tanh()
+            case _:
+                raise RuntimeError('Invalid reward clipping')
         self.is_f16 = f16_precision
 
         self.world_model: WorldModel = world_model(actions_num=actions_num).to(device_type)
@@ -95,7 +104,7 @@ class DreamerV2(RlAgent):
         additional = self.world_model.precalc_data(obs.to(self.device))
         return Rollout(obs=obs,
                        actions=rollout.actions,
-                       rewards=rollout.rewards,
+                       rewards=self.reward_clipper(rollout.rewards),
                        is_finished=rollout.is_finished,
                        is_first=rollout.is_first,
                        additional_data=rollout.additional_data | additional)

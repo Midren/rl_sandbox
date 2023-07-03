@@ -1,5 +1,6 @@
 _target_: rl_sandbox.agents.DreamerV2
 
+clip_rewards: identity
 imagination_horizon: 15
 batch_cluster_size: 50
 layer_norm: false

@@ -59,11 +59,11 @@ def main(cfg: DictConfig):
     val_env: Env = hydra.utils.instantiate(cfg.env)
     # TOOD: Create maybe some additional validation env
     if cfg.env.task_name.startswith("Crafter"):
-        val_env.env = crafter.Recorder(val_env.env,
-                                       logger.log_dir(),
-                                       save_stats=True,
-                                       save_video=False,
-                                       save_episode=False)
+        env.env = crafter.Recorder(env.env,
+                                   logger.log_dir(),
+                                   save_stats=True,
+                                   save_video=False,
+                                   save_episode=False)
 
     is_discrete = isinstance(env.action_space, Discrete)
     agent = hydra.utils.instantiate(
