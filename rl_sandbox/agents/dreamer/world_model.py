@@ -42,7 +42,7 @@ class WorldModel(nn.Module):
                                     actions_num,
                                     latent_classes,
                                     discrete_rssm,
-                                    norm_layer=nn.Identity if layer_norm else nn.LayerNorm)
+                                    norm_layer=nn.LayerNorm if layer_norm else nn.Identity)
         if encode_vit or decode_vit:
             # self.dino_vit = ViTFeat("/dino/dino_vitbase8_pretrain/dino_vitbase8_pretrain.pth", feat_dim=768, vit_arch='base', patch_size=8)
             self.dino_vit = ViTFeat("/dino/dino_deitsmall8_pretrain/dino_deitsmall8_pretrain.pth", feat_dim=384, vit_arch='small', patch_size=8)
@@ -63,7 +63,7 @@ class WorldModel(nn.Module):
                 #                 layer_norm=layer_norm)
                 )
         else:
-            self.encoder = Encoder(norm_layer=nn.Identity if layer_norm else nn.GroupNorm,
+            self.encoder = Encoder(norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
                                    kernel_sizes=[4, 4, 4, 4],
                                    channel_step=48,
                                    double_conv=False)
@@ -71,7 +71,7 @@ class WorldModel(nn.Module):
 
         if decode_vit:
             self.dino_predictor = Decoder(self.state_size,
-                                          norm_layer=nn.Identity if layer_norm else nn.GroupNorm,
+                                          norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
                                           channel_step=192,
                                           kernel_sizes=[3, 4],
                                           output_channels=self.vit_feat_dim,
@@ -84,7 +84,7 @@ class WorldModel(nn.Module):
             #                                        layer_norm=layer_norm,
             #                                        final_activation=DistLayer('mse'))
         self.image_predictor = Decoder(self.state_size,
-                                       norm_layer=nn.Identity if layer_norm else nn.GroupNorm)
+                                       norm_layer=nn.GroupNorm if layer_norm else nn.Identity)
 
         self.reward_predictor = fc_nn_generator(self.state_size,
                                                 1,

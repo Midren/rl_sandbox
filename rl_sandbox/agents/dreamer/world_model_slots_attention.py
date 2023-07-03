@@ -56,7 +56,7 @@ class WorldModel(nn.Module):
             actions_num,
             latent_classes,
             discrete_rssm,
-            norm_layer=nn.Identity if layer_norm else nn.LayerNorm,
+            norm_layer=nn.LayerNorm if layer_norm else nn.Identity,
             embed_size=self.n_dim,
             full_qk_from=full_qk_from,
             symmetric_qk=symmetric_qk,
@@ -85,7 +85,7 @@ class WorldModel(nn.Module):
                 #                 layer_norm=layer_norm)
             )
         else:
-            self.encoder = Encoder(norm_layer=nn.Identity if layer_norm else nn.GroupNorm,
+            self.encoder = Encoder(norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
                                    kernel_sizes=[4, 4, 4],
                                    channel_step=96,
                                    double_conv=True,
@@ -101,7 +101,7 @@ class WorldModel(nn.Module):
 
         if decode_vit:
             self.dino_predictor = Decoder(rssm_dim + latent_dim * latent_classes,
-                    norm_layer=nn.Identity if layer_norm else nn.GroupNorm,
+                    norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
                     channel_step=192,
                     # kernel_sizes=[5, 5, 4], # for size 224x224
                     kernel_sizes=[3, 4],
@@ -116,7 +116,7 @@ class WorldModel(nn.Module):
             #                                        final_activation=DistLayer('mse'))
         self.image_predictor = Decoder(
             rssm_dim + latent_dim * latent_classes,
-            norm_layer=nn.Identity if layer_norm else nn.GroupNorm,
+            norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
             output_channels=3+1,
             return_dist=False)
 

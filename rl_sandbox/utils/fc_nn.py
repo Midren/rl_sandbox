@@ -8,7 +8,7 @@ def fc_nn_generator(input_num: int,
                     intermediate_activation: t.Type[nn.Module] = nn.ReLU,
                     final_activation: nn.Module = nn.Identity(),
                     layer_norm: bool = False):
-    norm_layer = nn.Identity if layer_norm else nn.LayerNorm
+    norm_layer = nn.LayerNorm if layer_norm else nn.Identity
     assert num_layers >= 3
     layers = []
     layers.append(nn.Linear(input_num, hidden_size))

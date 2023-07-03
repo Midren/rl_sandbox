@@ -18,7 +18,7 @@ world_model:
   kl_free_nats: 0.00
   discrete_rssm: false
   decode_vit: true
-  full_qk_from: 1e6
+  full_qk_from: 4e4
   symmetric_qk: true
   use_prev_slots: false
   attention_block_num: 1
