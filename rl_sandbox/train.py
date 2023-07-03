@@ -72,6 +72,7 @@ def main(cfg: DictConfig):
         actions_num=env.action_space.n if is_discrete else env.action_space.shape[0],
         action_type='discrete' if is_discrete else 'continuous',
         device_type=cfg.device_type,
+        f16_precision=cfg.training.f16_precision,
         logger=logger)
 
     buff = ReplayBuffer(prioritize_ends=cfg.training.prioritize_ends,

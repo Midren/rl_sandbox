@@ -31,6 +31,7 @@ class DreamerV2(RlAgent):
             critic_optim: t.Any,
             layer_norm: bool,
             batch_cluster_size: int,
+            f16_precision: bool,
             device_type: str = 'cpu',
             logger = None):
 
@@ -39,6 +40,7 @@ class DreamerV2(RlAgent):
         self.imagination_horizon = imagination_horizon
         self.actions_num = actions_num
         self.is_discrete = (action_type != 'continuous')
+        self.is_f16 = f16_precision
 
         self.world_model: WorldModel = world_model(actions_num=actions_num).to(device_type)
         self.actor: ImaginativeActor = actor(latent_dim=self.world_model.state_size,
@@ -46,8 +48,8 @@ class DreamerV2(RlAgent):
                                                   is_discrete=self.is_discrete).to(device_type)
         self.critic: ImaginativeCritic = critic(latent_dim=self.world_model.state_size).to(device_type)
 
-        self.world_model_optimizer = wm_optim(model=self.world_model)
-        self.image_predictor_optimizer = wm_optim(model=self.world_model.image_predictor)
+        self.world_model_optimizer = wm_optim(model=self.world_model, scaler=self.is_f16)
+        self.image_predictor_optimizer = wm_optim(model=self.world_model.image_predictor, scaler=self.is_f16)
         self.actor_optimizer = actor_optim(model=self.actor)
         self.critic_optimizer = critic_optim(model=self.critic)
 
@@ -143,7 +145,7 @@ class DreamerV2(RlAgent):
         first_flags = is_first.float()
 
         # take some latent embeddings as initial
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.cuda.amp.autocast(enabled=self.is_f16):
             losses_wm, discovered_states, metrics_wm = self.world_model.calculate_loss(obs, a, r, discount_factors, first_flags, additional)
             # FIXME: wholely remove discrete RSSM
             # self.world_model.recurrent_model.discretizer_scheduler.step()
@@ -154,8 +156,7 @@ class DreamerV2(RlAgent):
 
         metrics_wm |= self.world_model_optimizer.step(losses_wm['loss_wm'])
 
-        with torch.cuda.amp.autocast(enabled=False):
-            losses_ac = {}
+        with torch.cuda.amp.autocast(enabled=self.is_f16):
             initial_states = discovered_states.__class__(discovered_states.determ.flatten(0, 1).unsqueeze(0).detach(),
                                    discovered_states.stoch_logits.flatten(0, 1).unsqueeze(0).detach(),
                                    discovered_states.stoch_.flatten(0, 1).unsqueeze(0).detach())

@@ -1,6 +1,7 @@
 steps: 1e6
 prefill: 10000
 batch_size: 16
+f16_precision: false
 pretrain: 1
 prioritize_ends: true
 train_every: 5

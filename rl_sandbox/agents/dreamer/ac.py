@@ -58,8 +58,8 @@ class ImaginativeCritic(nn.Module):
                 (1 - self.lambda_) * vs[i + 1] + self.lambda_ * v_lambdas[-1])
             v_lambdas.append(v_lambda)
 
-        # FIXME: it copies array, so it is quite slow
-        return torch.stack(v_lambdas).flip(dims=(0, ))[:-1]
+        reversed_indices = torch.arange(len(v_lambdas)-1, -1, -1)
+        return torch.stack(v_lambdas)[reversed_indices][:-1]
 
     def lambda_return(self, zs, rs, ds):
         vs = self.target_critic(zs).mode
@@ -119,8 +119,11 @@ class ImaginativeActor(nn.Module):
         advantage = (vs - baseline).detach()
         losses['loss_actor_reinforce'] = -(self.rho * action_dists.log_prob(
             actions.detach()).unsqueeze(2) * discount_factors * advantage).mean()
-        losses['loss_actor_dynamics_backprop'] = -((1 - self.rho) *
-                                                   (vs * discount_factors)).mean()
+        if self.rho != 1.0:
+            losses['loss_actor_dynamics_backprop'] = -((1 - self.rho) *
+                                                       (vs * discount_factors)).mean()
+        else:
+            losses['loss_actor_dynamics_backprop'] = torch.tensor(0)
 
         def calculate_entropy(dist):
             # return dist.base_dist.base_dist.entropy().unsqueeze(2)

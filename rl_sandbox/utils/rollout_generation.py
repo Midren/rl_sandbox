@@ -56,7 +56,8 @@ def iter_rollout(env: Env,
 
     reward = 0.0
     is_first = True
-    action = torch.zeros_like(agent.get_action(state))
+    with torch.no_grad():
+        action = torch.zeros_like(agent.get_action(state))
 
     while not terminated:
         try:
@@ -74,7 +75,8 @@ def iter_rollout(env: Env,
                       is_first=is_first)
         is_first = False
 
-        action = agent.get_action(state)
+        with torch.no_grad():
+            action = agent.get_action(state)
 
         state, reward, terminated = unpack(env.step(action))
 

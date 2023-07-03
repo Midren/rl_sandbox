@@ -15,7 +15,7 @@ world_model:
   kl_loss_balancing: 0.8
   kl_free_nats: 0.00
   discrete_rssm: false
-  decode_vit: true
+  decode_vit: false
   vit_l2_ratio: 1.0
   encode_vit: false
   predict_discount: true
