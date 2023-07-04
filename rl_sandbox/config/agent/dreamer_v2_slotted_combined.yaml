@@ -11,7 +11,7 @@ world_model:
   batch_cluster_size: ${..batch_cluster_size}
   latent_dim: 32
   latent_classes: ${.latent_dim}
-  rssm_dim: 512
+  rssm_dim: 1024
   slots_num: 6
   slots_iter_num: 2
   kl_loss_scale: 1e2 # Try a bit higher to enforce more predicting the future instead of reconstruction

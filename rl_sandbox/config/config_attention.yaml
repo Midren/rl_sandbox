@@ -2,6 +2,7 @@ defaults:
   - agent: dreamer_v2_slotted_attention
   - env: crafter
   - training: crafter
+  - logger: wandb
   - _self_
   - override hydra/launcher: joblib
 
@@ -9,8 +10,7 @@ seed: 42
 device_type: cuda
 
 logger:
-  type: tensorboard
-  message: Crafter attention slotted
+  message: Crafter attention 2x sched, fixed layer, dis f16
   log_grads: false
 
 training:

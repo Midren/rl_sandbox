@@ -30,6 +30,8 @@ jaxtyping = '^0.2.0'
 lovely_tensors = '^0.1.10'
 torchshow = '^0.5.0'
 crafter = '^1.8.0'
+wandb = '*'
+flatten-dict = '*'
 hydra-joblib-launcher = "*"
 
 [tool.yapf]

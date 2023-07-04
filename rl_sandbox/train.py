@@ -1,6 +1,7 @@
 import random
 import os
 os.environ['MUJOCO_GL'] = 'egl'
+os.environ["WANDB_MODE"]="offline"
 
 import crafter
 import hydra
@@ -22,13 +23,13 @@ from rl_sandbox.utils.rollout_generation import (collect_rollout_num,
                                                  iter_rollout)
 
 
-def val_logs(agent, val_cfg: DictConfig, metrics, env: Env, logger: Logger):
+def val_logs(agent, val_cfg: DictConfig, metrics, env: Env, logger: Logger, global_step: int):
     with torch.no_grad():
         rollouts = collect_rollout_num(env, val_cfg.rollout_num, agent, collect_obs=True)
         rollouts = [agent.preprocess(r) for r in rollouts]
 
-    for metric in metrics:
-        metric.on_val(logger, rollouts)
+        for metric in metrics:
+            metric.on_val(logger, rollouts, global_step)
 
 
 @hydra.main(version_base="1.2", config_path='config', config_name='config')
@@ -53,7 +54,7 @@ def main(cfg: DictConfig):
     # TODO: Implement smarter techniques for exploration
     #       (Plan2Explore, etc)
     print(f'Start run: {cfg.logger.message}')
-    logger = Logger(**cfg.logger)
+    logger = Logger(**cfg.logger, cfg=cfg)
 
     env: Env = hydra.utils.instantiate(cfg.env)
     val_env: Env = hydra.utils.instantiate(cfg.env)
@@ -104,7 +105,7 @@ def main(cfg: DictConfig):
         losses = agent.train(rollout_chunks)
         logger.log(losses, i, mode='pre_train')
 
-    val_logs(agent, cfg.validation, metrics, val_env, logger)
+    val_logs(agent, cfg.validation, metrics, val_env, logger, -1)
 
     if cfg.training.checkpoint_path is not None:
         prev_global_step = global_step = agent.load_ckpt(cfg.training.checkpoint_path)
@@ -144,7 +145,7 @@ def main(cfg: DictConfig):
         ### Validation
         if (global_step % cfg.training.val_logs_every) <= (prev_global_step %
                                                           cfg.training.val_logs_every):
-            val_logs(agent, cfg.validation, metrics, val_env, logger)
+            val_logs(agent, cfg.validation, metrics, val_env, logger, global_step)
 
         ### Checkpoint
         if (global_step % cfg.training.save_checkpoint_every) < (

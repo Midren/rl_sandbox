@@ -2,6 +2,7 @@ defaults:
   - agent: dreamer_v2_crafter
   - env: crafter
   - training: crafter
+  - logger: wandb
   - _self_
   - override hydra/launcher: joblib
 
@@ -9,14 +10,13 @@ seed: 42
 device_type: cuda
 
 logger:
-  type: tensorboard
   message: Crafter default
   log_grads: false
 
 training:
   checkpoint_path: null
   steps: 1e6
-  val_logs_every: 2e4
+  val_logs_every: 5e4
 
 validation:
   rollout_num: 5

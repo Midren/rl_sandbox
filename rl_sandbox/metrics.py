@@ -22,12 +22,12 @@ class EpisodeMetricsEvaluator():
     def on_episode(self, logger):
         pass
 
-    def on_val(self, logger, rollouts: list[Rollout]):
+    def on_val(self, logger, rollouts: list[Rollout], global_step: int):
         metrics = self.calculate_metrics(rollouts)
-        logger.log(metrics, self.episode, mode='val')
+        logger.log(metrics, global_step, mode='val')
         if self.log_video:
             video = rollouts[0].obs.unsqueeze(0)
-            logger.add_video('val/visualization', video.numpy() + 0.5, self.episode)
+            logger.add_video('val/visualization', ((video + 0.5) * 255).cpu().to(dtype=torch.uint8), global_step)
         self.episode += 1
 
     def calculate_metrics(self, rollouts: list[Rollout]):
@@ -67,7 +67,16 @@ class DreamerMetricsEvaluator():
 
     def on_episode(self, logger):
         latent_hist = (self._latent_probs / self.stored_steps).detach().cpu().numpy()
-        latent_hist = ((latent_hist / latent_hist.max() * 255.0 )).astype(np.uint8)
+        self.latent_hist = ((latent_hist / latent_hist.max() * 255.0 )).astype(np.uint8)
+
+        self.reset_ep()
+        self.episode += 1
+
+    def on_val(self, logger, rollouts: list[Rollout], global_step: int):
+        self.viz_log(rollouts[0], logger, global_step)
+
+        if self.episode == 0:
+            return
 
         # if discrete action space
         if self.agent.is_discrete:
@@ -79,14 +88,8 @@ class DreamerMetricsEvaluator():
         else:
             # log mean +- std
             pass
-        logger.add_image('val/latent_probs', latent_hist, self.episode, dataformats='HW')
-        logger.add_image('val/latent_probs_sorted', np.sort(latent_hist, axis=1), self.episode, dataformats='HW')
-
-        self.reset_ep()
-        self.episode += 1
-
-    def on_val(self, logger, rollouts: list[Rollout]):
-        self.viz_log(rollouts[0], logger, self.episode)
+        logger.add_image('val/latent_probs', self.latent_hist, global_step, dataformats='HW')
+        logger.add_image('val/latent_probs_sorted', np.sort(self.latent_hist, axis=1), global_step, dataformats='HW')
 
     def _generate_video(self, obs: list[Observation], actions: list[Action], update_num: int):
         # obs = self.agent.preprocess_obs(obs)
@@ -144,6 +147,7 @@ class DreamerMetricsEvaluator():
 
         videos_comparison = torch.cat([videos, videos_r, torch.abs(videos - videos_r + 1)/2], dim=2).unsqueeze(0)
 
+        videos_comparison = (videos_comparison.clamp(0, 1) * 255).cpu().to(dtype=torch.uint8)
         logger.add_video('val/dreamed_rollout', videos_comparison, epoch_num)
 
         rewards_err = torch.Tensor([torch.abs(sum(imagined_rewards[i]) - real_rewards[i].sum()) for i in range(len(imagined_rewards))]).mean()
@@ -165,19 +169,28 @@ class SlottedDreamerMetricsEvaluator(DreamerMetricsEvaluator):
 
         mu = wm.slot_attention.slots_mu
         sigma = wm.slot_attention.slots_logsigma.exp()
-        mu_hist = torch.mean((mu - mu.squeeze(0).unsqueeze(1)) ** 2, dim=-1)
-        sigma_hist = torch.mean((sigma - sigma.squeeze(0).unsqueeze(1)) ** 2, dim=-1)
+        self.mu_hist = torch.mean((mu - mu.squeeze(0).unsqueeze(1)) ** 2, dim=-1)
+        self.sigma_hist = torch.mean((sigma - sigma.squeeze(0).unsqueeze(1)) ** 2, dim=-1)
+
+
+        super().on_episode(logger)
+
+    def on_val(self, logger, rollouts: list[Rollout], global_step: int):
+        super().on_val(logger, rollouts, global_step)
+
+        if self.episode == 0:
+            return
+
+        wm = self.agent.world_model
 
         if hasattr(wm.recurrent_model, 'last_attention'):
             logger.add_image('val/mixer_attention', wm.recurrent_model.last_attention, self.episode, dataformats='HW')
 
-        logger.add_image('val/slot_attention_mu', mu_hist/mu_hist.max(), self.episode, dataformats='HW')
-        logger.add_image('val/slot_attention_sigma', sigma_hist/sigma_hist.max(), self.episode, dataformats='HW')
+        logger.add_image('val/slot_attention_mu', self.mu_hist/self.mu_hist.max(), self.episode, dataformats='HW')
+        logger.add_image('val/slot_attention_sigma', self.sigma_hist/self.sigma_hist.max(), self.episode, dataformats='HW')
 
-        logger.add_scalar('val/slot_attention_mu_diff_max', mu_hist.max(), self.episode)
-        logger.add_scalar('val/slot_attention_sigma_diff_max', sigma_hist.max(), self.episode)
-
-        super().on_episode(logger)
+        logger.add_scalar('val/slot_attention_mu_diff_max', self.mu_hist.max(), self.episode)
+        logger.add_scalar('val/slot_attention_sigma_diff_max', self.sigma_hist.max(), self.episode)
 
     def _generate_video(self, obs: list[Observation], actions: list[Action], update_num: int):
         # obs = torch.from_numpy(obs.copy()).to(self.agent.device)
@@ -258,8 +271,12 @@ class SlottedDreamerMetricsEvaluator(DreamerMetricsEvaluator):
 
         videos_comparison = torch.cat([videos, videos_r, torch.abs(videos - videos_r + 1)/2], dim=2).unsqueeze(0)
 
+        videos_comparison = (videos_comparison.clamp(0, 1) * 255).cpu().to(dtype=torch.uint8)
+        slots_video = (slots_video.clamp(0, 1) * 255).cpu().to(dtype=torch.uint8)
         logger.add_video('val/dreamed_rollout', videos_comparison, epoch_num)
         logger.add_video('val/dreamed_slots', slots_video, epoch_num)
+
+        (videos_comparison * 255).to()
 
         rewards_err = torch.Tensor([torch.abs(sum(imagined_rewards[i]) - real_rewards[i].sum()) for i in range(len(imagined_rewards))]).mean()
         logger.add_scalar('val/img_reward_err', rewards_err.item(), epoch_num)
@@ -367,6 +384,9 @@ class SlottedDinoDreamerMetricsEvaluator(SlottedDreamerMetricsEvaluator):
         vit_masks_video = vit_masks_video.permute((0, 2, 3, 1, 4))
         vit_masks_video = slots_video.reshape(*vit_masks_video.shape[:-2], -1).unsqueeze(0)
 
+        videos_comparison = (videos_comparison.clamp(0, 1) * 255).cpu().to(dtype=torch.uint8)
+        slots_video = (slots_video.clamp(0, 1) * 255).cpu().to(dtype=torch.uint8)
+        vit_masks_video = (vit_masks_video.clamp(0, 1) * 255).cpu().to(dtype=torch.uint8)
         logger.add_video('val/dreamed_rollout', videos_comparison, epoch_num)
         logger.add_video('val/dreamed_slots', slots_video, epoch_num)
         logger.add_video('val/dreamed_vit_masks', vit_masks_video, epoch_num)
