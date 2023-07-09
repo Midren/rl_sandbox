@@ -129,6 +129,50 @@ class Env(metaclass=ABCMeta):
             space = t.transform_space(t)
         return space
 
+class AtariEnv(Env):
+
+    def __init__(self, task_name: str, obs_res: tuple[int, int], sticky: bool, life_done: bool, greyscale: bool,
+                 repeat_action_num: int, transforms: list[ActionTransformer]):
+        import gym.wrappers
+        import gym.envs.atari
+        super().__init__(True, obs_res, repeat_action_num, transforms)
+
+        self.env: gym.Env = gym.envs.atari.AtariEnv(game=task_name, obs_type='image', frameskip=1, repeat_action_probability=0.25 if sticky else 0, full_action_space=False)
+        # Tell wrapper that the inner env has no action repeat.
+        self.env.spec = gym.envs.registration.EnvSpec('NoFrameskip-v0')
+        self.env = gym.wrappers.AtariPreprocessing(self.env,
+                                                    30, repeat_action_num, obs_res[0],
+                                                    life_done, greyscale)
+
+
+    def render(self):
+        raise RuntimeError("Render is not supported for AtariEnv")
+
+    def _step(self, action: Action, repeat_num: int) -> EnvStepResult:
+        rew = 0
+        for _ in range(repeat_num - 1):
+            new_state, reward, terminated, _ = self.env.step(action)
+            ts = EnvStepResult(new_state, reward, terminated)
+            if terminated:
+                break
+            rew += reward or 0.0
+        if repeat_num == 1 or not terminated:
+            new_state, reward, terminated, _ = self.env.step(action)
+            env_res = EnvStepResult(new_state, reward, terminated)
+        else:
+            env_res = ts
+        env_res.reward = rew + (env_res.reward or 0.0)
+        return env_res
+
+    def reset(self):
+        state = self.env.reset()
+        return EnvStepResult(state, 0, False)
+
+    def _observation_space(self):
+        return self.env.observation_space
+
+    def _action_space(self):
+        return self.env.action_space
 
 class GymEnv(Env):
 

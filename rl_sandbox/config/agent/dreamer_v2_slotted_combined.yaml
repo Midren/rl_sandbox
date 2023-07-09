@@ -1,76 +1,16 @@
-_target_: rl_sandbox.agents.DreamerV2
-
-clip_rewards: tanh
-imagination_horizon: 15
-batch_cluster_size: 50
-layer_norm: true
+defaults:
+  - dreamer_v2_crafter_slotted
+  - _self_
 
 world_model:
   _target_: rl_sandbox.agents.dreamer.world_model_slots_combined.WorldModel
-  _partial_: true
-  batch_cluster_size: ${..batch_cluster_size}
-  latent_dim: 32
-  latent_classes: ${.latent_dim}
-  rssm_dim: 1024
+  rssm_dim: 512
   slots_num: 6
   slots_iter_num: 2
-  kl_loss_scale: 1e2 # Try a bit higher to enforce more predicting the future instead of reconstruction
-  kl_loss_balancing: 0.8
-  kl_free_nats: 0.00
-  discrete_rssm: false
-  decode_vit: true
-  use_prev_slots: false
-  vit_l2_ratio: 0.1
+  kl_loss_scale: 1e2
   encode_vit: false
+  decode_vit: true
   mask_combination: soft
+  use_prev_slots: false
   per_slot_rec_loss: false
-  predict_discount: true
-  layer_norm: ${..layer_norm}
-
-actor:
-  _target_: rl_sandbox.agents.dreamer.ac.ImaginativeActor
-  _partial_: true
-  # mixing of reinforce and maximizing value func
-  # for dm_control it is zero in Dreamer (Atari 1)
-  reinforce_fraction: null
-  entropy_scale: 3e-3
-  layer_norm: ${..layer_norm}
-
-critic:
-  _target_: rl_sandbox.agents.dreamer.ac.ImaginativeCritic
-  _partial_: true
-  discount_factor: 0.999
-  update_interval: 100
-  # [0-1], 1 means hard update
-  soft_update_fraction: 1
-  # Lambda parameter for trainin deeper multi-step prediction
-  value_target_lambda: 0.95
-  layer_norm: ${..layer_norm}
-
-wm_optim:
-  _target_: rl_sandbox.utils.optimizer.Optimizer
-  _partial_: true
-  lr_scheduler:
-    - _target_: rl_sandbox.utils.optimizer.WarmupScheduler
-      _partial_: true
-      warmup_steps: 1e3
-  lr: 1e-4
-  eps: 1e-5
-  weight_decay: 1e-6
-  clip: 100
-
-actor_optim:
-  _target_: rl_sandbox.utils.optimizer.Optimizer
-  _partial_: true
-  lr: 1e-4
-  eps: 1e-5
-  weight_decay: 1e-6
-  clip: 100
-
-critic_optim:
-  _target_: rl_sandbox.utils.optimizer.Optimizer
-  _partial_: true
-  lr: 1e-4
-  eps: 1e-5
-  weight_decay: 1e-6
-  clip: 100
+  vit_l2_ratio: 0.1

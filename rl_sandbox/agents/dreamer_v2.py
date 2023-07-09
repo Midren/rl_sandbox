@@ -58,7 +58,8 @@ class DreamerV2(RlAgent):
         self.critic: ImaginativeCritic = critic(latent_dim=self.world_model.state_size).to(device_type)
 
         self.world_model_optimizer = wm_optim(model=self.world_model, scaler=self.is_f16)
-        self.image_predictor_optimizer = wm_optim(model=self.world_model.image_predictor, scaler=self.is_f16)
+        if self.world_model.decode_vit and self.world_model.vit_l2_ratio == 1.0:
+            self.image_predictor_optimizer = wm_optim(model=self.world_model.image_predictor, scaler=self.is_f16)
         self.actor_optimizer = actor_optim(model=self.actor)
         self.critic_optimizer = critic_optim(model=self.critic)
 
@@ -110,16 +111,30 @@ class DreamerV2(RlAgent):
                        additional_data=rollout.additional_data | additional)
 
     def preprocess_obs(self, obs: torch.Tensor):
-        # FIXME: move to dataloader in replay buffer
         order = list(range(len(obs.shape)))
         # Swap channel from last to 3 from last
         order = order[:-3] + [order[-1]] + order[-3:-1]
         if self.world_model.encode_vit:
             ToTensor = tv.transforms.Normalize((0.485, 0.456, 0.406),
                                                    (0.229, 0.224, 0.225))
-            return ToTensor(obs.type(torch.float32).permute(order))
+            return ToTensor(obs.type(torch.float32).permute(order) / 255.0)
         else:
             return ((obs.type(torch.float32) / 255.0) - 0.5).permute(order)
+        # return obs.type(torch.float32).permute(order)
+
+    def unprocess_obs(self, obs: torch.Tensor):
+        order = list(range(len(obs.shape)))
+        # # Swap channel from last to 3 from last
+        order = order[:-3] + order[-2:] + [order[-3]]
+        if self.world_model.encode_vit:
+            fromTensor = tv.transforms.Compose([ tv.transforms.Normalize(mean = [ 0., 0., 0. ],
+                                                     std = [ 1/0.229, 1/0.224, 1/0.225 ]),
+                                tv.transforms.Normalize(mean = [ -0.485, -0.456, -0.406 ],
+                                                     std = [ 1., 1., 1. ]),
+                               ])
+            return (fromTensor(obs).clamp(0, 1) * 255).cpu().to(dtype=torch.uint8)
+        else:
+            return ((obs + 0.5).clamp(0, 1) * 255).cpu().to(dtype=torch.uint8)
         # return obs.type(torch.float32).permute(order)
 
     def get_action(self, obs: Observation) -> Action:

@@ -27,7 +27,7 @@ class EpisodeMetricsEvaluator():
         logger.log(metrics, global_step, mode='val')
         if self.log_video:
             video = rollouts[0].obs.unsqueeze(0)
-            logger.add_video('val/visualization', ((video + 0.5) * 255).cpu().to(dtype=torch.uint8), global_step)
+            logger.add_video('val/visualization', self.agent.unprocess_obs(video), global_step)
         self.episode += 1
 
     def calculate_metrics(self, rollouts: list[Rollout]):
@@ -99,21 +99,14 @@ class DreamerMetricsEvaluator():
         rews = []
 
         state = None
-        means = np.array([0.485, 0.456, 0.406])
-        stds = np.array([0.229, 0.224, 0.225])
-        UnNormalize = tv.transforms.Normalize(list(-means/stds),
-                                           list(1/stds))
         for idx, (o, a) in enumerate(list(zip(obs, actions))):
             if idx > update_num:
                 break
             state = self.agent.world_model.get_latent(o, a.unsqueeze(0).unsqueeze(0), state)
             video_r = self.agent.world_model.image_predictor(state.combined).mode
             rews.append(self.agent.world_model.reward_predictor(state.combined).mode.item())
-            if self.agent.world_model.encode_vit:
-                video_r = UnNormalize(video_r)
-            else:
-                video_r = (video_r + 0.5)
-            video.append(video_r.clamp(0, 1))
+
+            video.append(self.agent.unprocess_obs(video_r))
 
         rews = torch.Tensor(rews).to(obs.device)
 
@@ -121,11 +114,8 @@ class DreamerMetricsEvaluator():
             states, _, rews_2, _ = self.agent.imagine_trajectory(state, actions[update_num+1:].unsqueeze(1), horizon=self.agent.imagination_horizon - 1 - update_num)
             rews = torch.cat([rews, rews_2[1:].squeeze()])
             video_r = self.agent.world_model.image_predictor(states.combined[1:]).mode.detach()
-            if self.agent.world_model.encode_vit:
-                video_r = UnNormalize(video_r)
-            else:
-                video_r = (video_r + 0.5)
-            video.append(video_r)
+
+            video.append(self.agent.unprocess_obs(video_r))
 
         return torch.cat(video), rews
 
@@ -135,7 +125,8 @@ class DreamerMetricsEvaluator():
 
         videos = torch.cat([
             rollout.obs[init_idx:init_idx + self.agent.imagination_horizon] for init_idx in init_indeces
-         ], dim=3) + 0.5
+         ], dim=3)
+        videos = self.agent.unprocess_obs(videos)
 
         real_rewards = [rollout.rewards[idx:idx+ self.agent.imagination_horizon] for idx in init_indeces]
 
@@ -145,9 +136,8 @@ class DreamerMetricsEvaluator():
         ])
         videos_r = torch.cat(videos_r, dim=3)
 
-        videos_comparison = torch.cat([videos, videos_r, torch.abs(videos - videos_r + 1)/2], dim=2).unsqueeze(0)
+        videos_comparison = torch.cat([videos, videos_r, (torch.abs(videos.float() - videos_r.float() + 1)/2).to(dtype=torch.uint8)], dim=2).unsqueeze(0)
 
-        videos_comparison = (videos_comparison.clamp(0, 1) * 255).cpu().to(dtype=torch.uint8)
         logger.add_video('val/dreamed_rollout', videos_comparison, epoch_num)
 
         rewards_err = torch.Tensor([torch.abs(sum(imagined_rewards[i]) - real_rewards[i].sum()) for i in range(len(imagined_rewards))]).mean()
@@ -204,10 +194,6 @@ class SlottedDreamerMetricsEvaluator(DreamerMetricsEvaluator):
 
         state = None
         prev_slots = None
-        means = np.array([0.485, 0.456, 0.406])
-        stds = np.array([0.229, 0.224, 0.225])
-        UnNormalize = tv.transforms.Normalize(list(-means/stds),
-                                           list(1/stds))
         for idx, (o, a) in enumerate(list(zip(obs, actions))):
             if idx > update_num:
                 break
@@ -221,12 +207,8 @@ class SlottedDreamerMetricsEvaluator(DreamerMetricsEvaluator):
             video_r = torch.sum(decoded_imgs, dim=1)
 
             rews.append(self.agent.world_model.reward_predictor(state.combined).mode.item())
-            if self.agent.world_model.encode_vit:
-                video_r = UnNormalize(video_r)
-            else:
-                video_r = (video_r + 0.5)
-            video.append(video_r.clamp(0, 1))
-            slots_video.append((decoded_imgs + 0.5).clamp(0, 1))
+            video.append(self.agent.unprocess_obs(video_r))
+            slots_video.append(self.agent.unprocess_obs(decoded_imgs))
 
         rews = torch.Tensor(rews).to(obs.device)
 
@@ -240,12 +222,8 @@ class SlottedDreamerMetricsEvaluator(DreamerMetricsEvaluator):
             decoded_imgs = decoded_imgs * img_mask
             video_r = torch.sum(decoded_imgs, dim=1)
 
-            if self.agent.world_model.encode_vit:
-                video_r = UnNormalize(video_r)
-            else:
-                video_r = (video_r + 0.5)
-            video.append(video_r)
-            slots_video.append(decoded_imgs + 0.5)
+            video.append(self.agent.unprocess_obs(video_r))
+            slots_video.append(self.agent.unprocess_obs(decoded_imgs))
 
         return torch.cat(video), rews, torch.cat(slots_video)
 
@@ -255,7 +233,8 @@ class SlottedDreamerMetricsEvaluator(DreamerMetricsEvaluator):
 
         videos = torch.cat([
             rollout.obs[init_idx:init_idx + self.agent.imagination_horizon] for init_idx in init_indeces
-        ], dim=3) + 0.5
+        ], dim=3)
+        videos = self.agent.unprocess_obs(videos)
 
         real_rewards = [rollout.rewards[idx:idx+ self.agent.imagination_horizon] for idx in init_indeces]
 
@@ -265,18 +244,14 @@ class SlottedDreamerMetricsEvaluator(DreamerMetricsEvaluator):
         ])
         videos_r = torch.cat(videos_r, dim=3)
 
+        videos_comparison = torch.cat([videos, videos_r, (torch.abs(videos.float() - videos_r.float() + 1)/2).to(dtype=torch.uint8)], dim=2).unsqueeze(0)
         slots_video = torch.cat(list(slots_video)[:3], dim=3)
+
         slots_video = slots_video.permute((0, 2, 3, 1, 4))
         slots_video = slots_video.reshape(*slots_video.shape[:-2], -1).unsqueeze(0)
 
-        videos_comparison = torch.cat([videos, videos_r, torch.abs(videos - videos_r + 1)/2], dim=2).unsqueeze(0)
-
-        videos_comparison = (videos_comparison.clamp(0, 1) * 255).cpu().to(dtype=torch.uint8)
-        slots_video = (slots_video.clamp(0, 1) * 255).cpu().to(dtype=torch.uint8)
         logger.add_video('val/dreamed_rollout', videos_comparison, epoch_num)
         logger.add_video('val/dreamed_slots', slots_video, epoch_num)
-
-        (videos_comparison * 255).to()
 
         rewards_err = torch.Tensor([torch.abs(sum(imagined_rewards[i]) - real_rewards[i].sum()) for i in range(len(imagined_rewards))]).mean()
         logger.add_scalar('val/img_reward_err', rewards_err.item(), epoch_num)
@@ -297,10 +272,6 @@ class SlottedDinoDreamerMetricsEvaluator(SlottedDreamerMetricsEvaluator):
 
         state = None
         prev_slots = None
-        means = np.array([0.485, 0.456, 0.406])
-        stds = np.array([0.229, 0.224, 0.225])
-        UnNormalize = tv.transforms.Normalize(list(-means/stds),
-                                           list(1/stds))
         for idx, (o, a) in enumerate(list(zip(obs, actions))):
             if idx > update_num:
                 break
@@ -316,17 +287,14 @@ class SlottedDinoDreamerMetricsEvaluator(SlottedDreamerMetricsEvaluator):
             _, vit_masks = self.agent.world_model.dino_predictor(state.combined_slots.flatten(0, 1)).reshape(-1, self.agent.world_model.slots_num, self.agent.world_model.vit_feat_dim+1, 8, 8).split([self.agent.world_model.vit_feat_dim, 1], dim=2)
             vit_mask = F.softmax(vit_masks, dim=1)
             upscale = tv.transforms.Resize(64, antialias=True)
+
             upscaled_mask = upscale(vit_mask.permute(0, 1, 4, 2, 3).squeeze())
             per_slot_vit = (upscaled_mask.unsqueeze(1) * o.to(self.agent.device).unsqueeze(0)).unsqueeze(0)
 
             rews.append(self.agent.world_model.reward_predictor(state.combined).mode.item())
-            if self.agent.world_model.encode_vit:
-                video_r = UnNormalize(video_r)
-            else:
-                video_r = (video_r + 0.5)
-            video.append(video_r.clamp(0, 1))
-            slots_video.append((decoded_imgs + 0.5).clamp(0, 1))
-            vit_slots_video.append((per_slot_vit/upscaled_mask.max() + 0.5).clamp(0, 1))
+            video.append(self.agent.unprocess_obs(video_r))
+            slots_video.append(self.agent.unprocess_obs(decoded_imgs))
+            vit_slots_video.append(self.agent.unprocess_obs(per_slot_vit/upscaled_mask.max()))
 
         rews = torch.Tensor(rews).to(obs.device)
 
@@ -347,14 +315,9 @@ class SlottedDinoDreamerMetricsEvaluator(SlottedDreamerMetricsEvaluator):
             per_slot_vit = (upscaled_mask.unsqueeze(2) * obs[update_num+1:].to(self.agent.device).unsqueeze(1))
             # per_slot_vit = (upscaled_mask.unsqueeze(1) * o.to(self.agent.device).unsqueeze(0)).unsqueeze(0)
 
-            if self.agent.world_model.encode_vit:
-                video_r = UnNormalize(video_r)
-            else:
-                video_r = (video_r + 0.5)
-            video.append(video_r.clamp(0, 1))
-            slots_video.append((decoded_imgs + 0.5).clamp(0, 1))
-            vit_slots_video = None # FIXME: this is not correct
-            # vit_slots_video.append(per_slot_vit/np.expand_dims(upscaled_mask.max(axis=(1,2,3)), axis=(1,2,3,4)) + 0.5)
+            video.append(self.agent.unprocess_obs(video_r))
+            slots_video.append(self.agent.unprocess_obs(decoded_imgs))
+            vit_slots_video.append(self.agent.unprocess_obs(per_slot_vit/torch.amax(upscaled_mask, dim=(1,2,3)).view(-1, 1, 1, 1, 1)))
 
         return torch.cat(video), rews, torch.cat(slots_video), torch.cat(vit_slots_video)
 
@@ -364,29 +327,28 @@ class SlottedDinoDreamerMetricsEvaluator(SlottedDreamerMetricsEvaluator):
 
         videos = torch.cat([
             rollout.obs[init_idx:init_idx + self.agent.imagination_horizon] for init_idx in init_indeces
-        ], dim=3) + 0.5
+        ], dim=3)
+        videos = self.agent.unprocess_obs(videos)
 
         real_rewards = [rollout.rewards[idx:idx+ self.agent.imagination_horizon] for idx in init_indeces]
 
-        videos_r, imagined_rewards, slots_video, vit_masks_video = zip(*[self._generate_video(obs_0.copy(), a_0, update_num=self.agent.imagination_horizon//3) for obs_0, a_0 in zip(
+        videos_r, imagined_rewards, slots_video, vit_masks_video = zip(*[self._generate_video(obs_0, a_0, update_num=self.agent.imagination_horizon//3) for obs_0, a_0 in zip(
                 [rollout.obs[idx:idx+ self.agent.imagination_horizon] for idx in init_indeces],
                 [rollout.actions[idx:idx+ self.agent.imagination_horizon] for idx in init_indeces])
         ])
         videos_r = torch.cat(videos_r, dim=3)
 
+
+        videos_comparison = torch.cat([videos, videos_r, (torch.abs(videos.float() - videos_r.float() + 1)/2).to(dtype=torch.uint8)], dim=2).unsqueeze(0)
+
         slots_video = torch.cat(list(slots_video)[:3], dim=3)
         slots_video = slots_video.permute((0, 2, 3, 1, 4))
         slots_video = slots_video.reshape(*slots_video.shape[:-2], -1).unsqueeze(0)
 
-        videos_comparison = torch.cat([videos, videos_r, torch.abs(videos - videos_r + 1)/2], dim=2).unsqueeze(0)
-
         vit_masks_video = torch.cat(list(vit_masks_video)[:3], dim=3)
         vit_masks_video = vit_masks_video.permute((0, 2, 3, 1, 4))
-        vit_masks_video = slots_video.reshape(*vit_masks_video.shape[:-2], -1).unsqueeze(0)
+        vit_masks_video = vit_masks_video.reshape(*vit_masks_video.shape[:-2], -1).unsqueeze(0)
 
-        videos_comparison = (videos_comparison.clamp(0, 1) * 255).cpu().to(dtype=torch.uint8)
-        slots_video = (slots_video.clamp(0, 1) * 255).cpu().to(dtype=torch.uint8)
-        vit_masks_video = (vit_masks_video.clamp(0, 1) * 255).cpu().to(dtype=torch.uint8)
         logger.add_video('val/dreamed_rollout', videos_comparison, epoch_num)
         logger.add_video('val/dreamed_slots', slots_video, epoch_num)
         logger.add_video('val/dreamed_vit_masks', vit_masks_video, epoch_num)

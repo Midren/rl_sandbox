@@ -16,7 +16,7 @@ logger:
 training:
   checkpoint_path: null
   steps: 1e6
-  val_logs_every: 5e4
+  val_logs_every: 2e4
 
 validation:
   rollout_num: 5

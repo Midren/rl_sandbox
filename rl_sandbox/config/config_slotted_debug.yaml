@@ -1,6 +1,7 @@
 defaults:
-  - agent: dreamer_v2_crafter_slotted
+  - agent: dreamer_v2_slotted_combined
   - env: crafter
+  - logger: tensorboard
   - training: crafter
   - _self_
   - override hydra/launcher: joblib
@@ -8,9 +9,14 @@ defaults:
 seed: 42
 device_type: cuda
 
+agent:
+  world_model:
+    encode_vit: true
+    vit_l2_ratio: 1.0
+    kl_loss_scale: 1e4
+
 logger:
-  type: tensorboard
-  message: Crafter 6 DINO slots
+  message: Combined encode vit
   log_grads: false
 
 training:
@@ -25,7 +31,7 @@ validation:
     - _target_: rl_sandbox.metrics.EpisodeMetricsEvaluator
       log_video: True
       _partial_: true
-    - _target_: rl_sandbox.metrics.SlottedDreamerMetricsEvaluator
+    - _target_: rl_sandbox.metrics.SlottedDinoDreamerMetricsEvaluator
       _partial_: true
 
 debug:
@@ -38,6 +44,9 @@ hydra:
     n_jobs: 1
   #sweeper:
   #  params:
-  #    agent.world_model.kl_loss_scale: 1e1,1e2,1e3,1e4
-  #    agent.world_model.vit_l2_ratio: 0.1,0.9
+  #    agent.world_model.slots_num: 3,6
+  #    agent.world_model.per_slot_rec_loss: true
+  #    agent.world_model.mask_combination: soft,hard
+  #    agent.world_model.kl_loss_scale: 1e2
+  #    agent.world_model.vit_l2_ratio: 0.1,1e-3
 

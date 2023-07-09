@@ -12,6 +12,7 @@ world_model:
   latent_dim: 32
   latent_classes: 32
   rssm_dim: 200
+  discount_loss_scale: 1.0
   kl_loss_scale: 1e1
   kl_loss_balancing: 0.8
   kl_free_nats: 0.00
@@ -34,7 +35,7 @@ actor:
 critic:
   _target_: rl_sandbox.agents.dreamer.ac.ImaginativeCritic
   _partial_: true
-  discount_factor: 0.999
+  discount_factor: 0.99
   update_interval: 100
   # [0-1], 1 means hard update
   soft_update_fraction: 1

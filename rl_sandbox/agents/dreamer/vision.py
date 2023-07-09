@@ -9,11 +9,11 @@ class Encoder(nn.Module):
                     kernel_sizes=[4, 4, 4],
                     double_conv=False,
                     flatten_output=True,
+                    in_channels=3,
                 ):
         super().__init__()
         layers = []
 
-        in_channels = 3
         for i, k in enumerate(kernel_sizes):
             out_channels = 2**i * channel_step
             layers.append(nn.Conv2d(in_channels, out_channels, kernel_size=k, stride=2))

@@ -1,0 +1,9 @@
+steps: 4e4
+prefill: 50000
+batch_size: 16
+f16_precision: false
+pretrain: 1
+prioritize_ends: true
+train_every: 4
+save_checkpoint_every: 5e5
+val_logs_every: 2e4

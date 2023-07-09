@@ -17,10 +17,11 @@ from rl_sandbox.vision.slot_attention import PositionalEmbedding, SlotAttention
 class WorldModel(nn.Module):
 
     def __init__(self, batch_cluster_size, latent_dim, latent_classes, rssm_dim,
-                 actions_num, kl_loss_scale, kl_loss_balancing, kl_free_nats, discrete_rssm,
+                 actions_num, discount_loss_scale, kl_loss_scale, kl_loss_balancing, kl_free_nats, discrete_rssm,
                  predict_discount, layer_norm: bool, encode_vit: bool, decode_vit: bool, vit_l2_ratio: float):
         super().__init__()
         self.register_buffer('kl_free_nats', kl_free_nats * torch.ones(1))
+        self.discount_scale = discount_loss_scale
         self.kl_beta = kl_loss_scale
 
         self.rssm_dim = rssm_dim
@@ -166,7 +167,7 @@ class WorldModel(nn.Module):
             else:
                 kl_lhs = KL_(Dist(dist2.detach()), Dist(dist1)).mean()
                 kl_rhs = KL_(Dist(dist2), Dist(dist1.detach())).mean()
-            return (self.kl_beta * (self.alpha * kl_lhs + (1 - self.alpha) * kl_rhs))
+            return ((self.alpha * kl_lhs + (1 - self.alpha) * kl_rhs))
 
         priors = []
         posteriors = []
@@ -226,6 +227,6 @@ class WorldModel(nn.Module):
         metrics['posterior_entropy'] = Dist(posterior_logits).entropy().mean()
 
         losses['loss_wm'] = (losses['loss_reconstruction'] + losses['loss_reward_pred'] +
-                             losses['loss_kl_reg'] + losses['loss_discount_pred'])
+                             self.kl_beta * losses['loss_kl_reg'] + self.discount_scale*losses['loss_discount_pred'])
 
         return losses, posterior, metrics

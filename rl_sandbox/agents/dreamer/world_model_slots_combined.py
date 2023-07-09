@@ -7,7 +7,7 @@ import torchvision as tv
 from torch import nn
 from torch.nn import functional as F
 
-from rl_sandbox.agents.dreamer import Dist, Normalizer
+from rl_sandbox.agents.dreamer import Dist, Normalizer, View
 from rl_sandbox.agents.dreamer.rssm_slots_combined import RSSM, State
 from rl_sandbox.agents.dreamer.vision import Decoder, Encoder, ViTDecoder
 from rl_sandbox.utils.dists import DistLayer
@@ -19,7 +19,7 @@ from rl_sandbox.vision.slot_attention import PositionalEmbedding, SlotAttention
 class WorldModel(nn.Module):
 
     def __init__(self, batch_cluster_size, latent_dim, latent_classes, rssm_dim,
-                 actions_num, kl_loss_scale, kl_loss_balancing, kl_free_nats,
+                 actions_num, discount_loss_scale, kl_loss_scale, kl_loss_balancing, kl_free_nats,
                  discrete_rssm, predict_discount, layer_norm: bool, encode_vit: bool,
                  decode_vit: bool, vit_l2_ratio: float, slots_num: int, slots_iter_num: int, use_prev_slots: bool = True,
                  mask_combination: str = 'soft',
@@ -27,6 +27,7 @@ class WorldModel(nn.Module):
         super().__init__()
         self.use_prev_slots = use_prev_slots
         self.register_buffer('kl_free_nats', kl_free_nats * torch.ones(1))
+        self.discount_scale = discount_loss_scale
         self.kl_beta = kl_loss_scale
 
         self.rssm_dim = rssm_dim
@@ -70,16 +71,27 @@ class WorldModel(nn.Module):
             self.dino_vit.requires_grad_(False)
 
         if encode_vit:
+            self.post_vit = nn.Sequential(
+                View((-1, self.vit_feat_dim, 8, 8)),
+                Encoder(norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
+                        kernel_sizes=[2],
+                        channel_step=384,
+                        double_conv=False,
+                        flatten_output=False,
+                        in_channels=self.vit_feat_dim
+                        )
+            )
             self.encoder = nn.Sequential(
                 self.dino_vit,
-                nn.Flatten(),
+                self.post_vit
+            )
+                # nn.Flatten(),
                 # fc_nn_generator(64*self.dino_vit.feat_dim,
                 #                 64*384,
                 #                 hidden_size=400,
                 #                 num_layers=5,
                 #                 intermediate_activation=nn.ELU,
                 #                 layer_norm=layer_norm)
-            )
         else:
             self.encoder = Encoder(norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
                                    kernel_sizes=[4, 4, 4],
@@ -88,7 +100,10 @@ class WorldModel(nn.Module):
                                    flatten_output=False)
 
         self.slot_attention = SlotAttention(slots_num, self.n_dim, slots_iter_num)
-        self.positional_augmenter_inp = PositionalEmbedding(self.n_dim, (6, 6))
+        if self.encode_vit:
+            self.positional_augmenter_inp = PositionalEmbedding(self.n_dim, (4, 4))
+        else:
+            self.positional_augmenter_inp = PositionalEmbedding(self.n_dim, (6, 6))
         # self.positional_augmenter_dec = PositionalEmbedding(self.n_dim, (8, 8))
 
         self.slot_mlp = nn.Sequential(nn.Linear(self.n_dim, self.n_dim),
@@ -214,7 +229,11 @@ class WorldModel(nn.Module):
         self.recurrent_model.on_train_step()
         b, _, h, w = obs.shape  # s <- BxHxWx3
 
-        embed = self.encoder(obs)
+        if self.encode_vit:
+            embed = self.post_vit(additional['d_features'])
+            # embed = self.encoder(obs)
+        else:
+            embed = self.encoder(obs)
         embed_with_pos_enc = self.positional_augmenter_inp(embed)
         # embed_c = embed.reshape(b // self.cluster_size, self.cluster_size, -1)
 
@@ -240,7 +259,7 @@ class WorldModel(nn.Module):
                 td.OneHotCategoricalStraightThrough(logits=dist1.detach())).mean()
             kl_lhs = torch.maximum(kl_lhs, self.kl_free_nats)
             kl_rhs = torch.maximum(kl_rhs, self.kl_free_nats)
-            return (self.kl_beta * (self.alpha * kl_lhs + (1 - self.alpha) * kl_rhs))
+            return ((self.alpha * kl_lhs + (1 - self.alpha) * kl_rhs))
 
         priors = []
         posteriors = []
@@ -313,7 +332,7 @@ class WorldModel(nn.Module):
                     x_r = td.Independent(td.Normal(torch.sum(decoded_imgs, dim=1), 1.0), 3)
                     img_rec = -x_r.log_prob(obs).float().mean()
             else:
-                img_rec = 0
+                img_rec = torch.tensor(0, device=obs.device)
                 decoded_imgs_detached, masks = self.image_predictor(posterior.combined_slots.transpose(0, 1).flatten(0, 2).detach()).reshape(b, -1, 4, h, w).split([3, 1], dim=2)
                 img_mask = self.slot_mask(masks)
                 decoded_imgs_detached = decoded_imgs_detached * img_mask
@@ -362,7 +381,7 @@ class WorldModel(nn.Module):
         metrics['posterior_entropy'] = Dist(posterior_logits).entropy().mean()
 
         losses['loss_wm'] = (losses['loss_reconstruction'] + losses['loss_reward_pred'] +
-                             losses['loss_kl_reg'] + losses['loss_discount_pred'])
+                             self.kl_beta * losses['loss_kl_reg'] + self.discount_scale*losses['loss_discount_pred'])
 
         return losses, posterior, metrics
 

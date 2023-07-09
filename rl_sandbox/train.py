@@ -105,7 +105,7 @@ def main(cfg: DictConfig):
         losses = agent.train(rollout_chunks)
         logger.log(losses, i, mode='pre_train')
 
-    val_logs(agent, cfg.validation, metrics, val_env, logger, -1)
+    val_logs(agent, cfg.validation, metrics, val_env, logger, 0)
 
     if cfg.training.checkpoint_path is not None:
         prev_global_step = global_step = agent.load_ckpt(cfg.training.checkpoint_path)
@@ -129,7 +129,7 @@ def main(cfg: DictConfig):
                 losses = agent.train(rollout_chunk)
                 if cfg.debug.profiler:
                     prof.step()
-                if global_step % 100 == 0:
+                if global_step % 1000 == 0:
                     logger.log(losses, global_step, mode='train')
 
             for metric in metrics:
