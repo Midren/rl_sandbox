@@ -1,16 +1,22 @@
 defaults:
-  - agent: dreamer_v2_atari
-  - env: atari_freeway
-  - training: atari
-  - logger: tensorboard
+  - agent: dreamer_v2_crafter
+  - env: crafter
+  - training: crafter
+  - logger: wandb
   - _self_
   - override hydra/launcher: joblib
 
 seed: 42
 device_type: cuda
 
+agent:
+  world_model:
+    decode_vit: true
+    vit_img_size: 224
+    vit_l2_ratio: 0.5
+
 logger:
-  message: Atari with default dreamer
+  message: Crafter decode vit
   log_grads: false
 
 training:
@@ -38,4 +44,7 @@ hydra:
     n_jobs: 8
   sweeper:
     params:
-      env.task_name: amidar,asterix,chopper_command,demon_attack,freeway,private_eye,venture,video_pinball
+      agent.world_model.vit_img_size: 64,224
+      agent.world_model.kl_loss_scale: 0.1,1
+      agent.world_model.vit_l2_ratio: 0.1,0.9
+

@@ -137,7 +137,7 @@ class AtariEnv(Env):
         import gym.envs.atari
         super().__init__(True, obs_res, repeat_action_num, transforms)
 
-        self.env: gym.Env = gym.envs.atari.AtariEnv(game=task_name, obs_type='image', frameskip=1, repeat_action_probability=0.25 if sticky else 0, full_action_space=False)
+        self.env: gym.Env = gym.envs.atari.AtariEnv(game=task_name, obs_type='rgb', frameskip=1, repeat_action_probability=0.25 if sticky else 0, full_action_space=False)
         # Tell wrapper that the inner env has no action repeat.
         self.env.spec = gym.envs.registration.EnvSpec('NoFrameskip-v0')
         self.env = gym.wrappers.AtariPreprocessing(self.env,

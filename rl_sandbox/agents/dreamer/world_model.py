@@ -6,7 +6,7 @@ import torchvision as tv
 from torch import nn
 from torch.nn import functional as F
 
-from rl_sandbox.agents.dreamer import Dist, Normalizer
+from rl_sandbox.agents.dreamer import Dist, Normalizer, View
 from rl_sandbox.agents.dreamer.rssm import RSSM, State
 from rl_sandbox.agents.dreamer.vision import Decoder, Encoder
 from rl_sandbox.utils.dists import DistLayer
@@ -18,7 +18,8 @@ class WorldModel(nn.Module):
 
     def __init__(self, batch_cluster_size, latent_dim, latent_classes, rssm_dim,
                  actions_num, discount_loss_scale, kl_loss_scale, kl_loss_balancing, kl_free_nats, discrete_rssm,
-                 predict_discount, layer_norm: bool, encode_vit: bool, decode_vit: bool, vit_l2_ratio: float):
+                 predict_discount, layer_norm: bool, encode_vit: bool, decode_vit: bool,
+                 vit_l2_ratio: float, vit_img_size: int):
         super().__init__()
         self.register_buffer('kl_free_nats', kl_free_nats * torch.ones(1))
         self.discount_scale = discount_loss_scale
@@ -37,6 +38,7 @@ class WorldModel(nn.Module):
         self.encode_vit = encode_vit
         self.decode_vit = decode_vit
         self.vit_l2_ratio = vit_l2_ratio
+        self.vit_img_size = vit_img_size
 
         self.recurrent_model = RSSM(latent_dim,
                                     rssm_dim,
@@ -45,24 +47,37 @@ class WorldModel(nn.Module):
                                     discrete_rssm,
                                     norm_layer=nn.LayerNorm if layer_norm else nn.Identity)
         if encode_vit or decode_vit:
+            if self.vit_img_size == 224:
+                self.dino_vit = ViTFeat("/dino/dino_deitsmall16_pretrain/dino_deitsmall16_pretrain.pth",
+                                        feat_dim=384, vit_arch='small', patch_size=16)
+                self.decoder_kernels = [3, 3, 2]
+                self.vit_size = 14
+            elif self.vit_img_size == 64:
+                self.dino_vit = ViTFeat("/dino/dino_deitsmall8_pretrain/dino_deitsmall8_pretrain.pth",
+                                       feat_dim=384, vit_arch='small', patch_size=8)
+                self.decoder_kernels = [3, 4]
+                self.vit_size = 8
+            else:
+                raise RuntimeError("Unknown vit img size")
             # self.dino_vit = ViTFeat("/dino/dino_vitbase8_pretrain/dino_vitbase8_pretrain.pth", feat_dim=768, vit_arch='base', patch_size=8)
-            self.dino_vit = ViTFeat("/dino/dino_deitsmall8_pretrain/dino_deitsmall8_pretrain.pth", feat_dim=384, vit_arch='small', patch_size=8)
-            # self.dino_vit = ViTFeat("/dino/dino_deitsmall16_pretrain/dino_deitsmall16_pretrain.pth", feat_dim=384, vit_arch='small', patch_size=16)
             self.vit_feat_dim = self.dino_vit.feat_dim
-            self.vit_num_patches = self.dino_vit.model.patch_embed.num_patches
             self.dino_vit.requires_grad_(False)
 
         if encode_vit:
+            self.post_vit = nn.Sequential(
+                View((-1, self.vit_feat_dim, self.vit_size, self.vit_size)),
+                Encoder(norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
+                        kernel_sizes=[2],
+                        channel_step=384,
+                        double_conv=False,
+                        flatten_output=False,
+                        in_channels=self.vit_feat_dim
+                        )
+            )
             self.encoder = nn.Sequential(
                 self.dino_vit,
-                nn.Flatten(),
-                # fc_nn_generator(64*self.dino_vit.feat_dim,
-                #                 64*384,
-                #                 hidden_size=400,
-                #                 num_layers=5,
-                #                 intermediate_activation=nn.ELU,
-                #                 layer_norm=layer_norm)
-                )
+                self.post_vit
+            )
         else:
             self.encoder = Encoder(norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
                                    kernel_sizes=[4, 4, 4, 4],
@@ -74,16 +89,9 @@ class WorldModel(nn.Module):
             self.dino_predictor = Decoder(self.state_size,
                                           norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
                                           channel_step=192,
-                                          kernel_sizes=[3, 4],
+                                          kernel_sizes=self.decoder_kernels,
                                           output_channels=self.vit_feat_dim,
                                           return_dist=True)
-            # self.dino_predictor = fc_nn_generator(self.state_size,
-            #                                        64*self.dino_vit.feat_dim,
-            #                                        hidden_size=2048,
-            #                                        num_layers=5,
-            #                                        intermediate_activation=nn.ELU,
-            #                                        layer_norm=layer_norm,
-            #                                        final_activation=DistLayer('mse'))
         self.image_predictor = Decoder(self.state_size,
                                        norm_layer=nn.GroupNorm if layer_norm else nn.Identity)
 
@@ -107,11 +115,9 @@ class WorldModel(nn.Module):
         if not self.decode_vit:
             return {}
         if not self.encode_vit:
-            # ToTensor = tv.transforms.Compose([tv.transforms.Normalize((0.485, 0.456, 0.406),
-            #                                        (0.229, 0.224, 0.225)),
-            #                                   tv.transforms.Resize(224, antialias=True)])
-            ToTensor = tv.transforms.Normalize((0.485, 0.456, 0.406),
-                                                   (0.229, 0.224, 0.225))
+            ToTensor = tv.transforms.Compose([tv.transforms.Normalize((0.485, 0.456, 0.406),
+                                                   (0.229, 0.224, 0.225)),
+                                              tv.transforms.Resize(self.vit_img_size, antialias=True)])
             obs = ToTensor(obs + 0.5)
         with torch.no_grad():
             d_features = self.dino_vit(obs).cpu()
@@ -146,7 +152,10 @@ class WorldModel(nn.Module):
         self.recurrent_model.on_train_step()
         b, _, h, w = obs.shape  # s <- BxHxWx3
 
-        embed = self.encoder(obs)
+        if self.encode_vit:
+            embed = self.post_vit(additional['d_features'])
+        else:
+            embed = self.encoder(obs)
         embed_c = embed.reshape(b // self.cluster_size, self.cluster_size, -1)
 
         a_c = a.reshape(-1, self.cluster_size, self.actions_num)
@@ -208,11 +217,15 @@ class WorldModel(nn.Module):
                 img_rec = 0
                 x_r_detached = self.image_predictor(posterior.combined.transpose(0, 1).flatten(0, 1).detach())
                 losses['loss_reconstruction_img'] = -x_r_detached.log_prob(obs).float().mean()
+
             d_pred = self.dino_predictor(posterior.combined.transpose(0, 1).flatten(0, 1))
-            losses['loss_reconstruction'] = (self.vit_l2_ratio * -d_pred.log_prob(d_features.reshape(b, self.vit_feat_dim, 8, 8)).float().mean() +
-                                            (1-self.vit_l2_ratio) * img_rec)
-            # losses['loss_reconstruction'] = (self.vit_l2_ratio * -d_pred.log_prob(d_features.flatten(1, 2)).float().mean() +
-            #                                 (1-self.vit_l2_ratio) * img_rec)
+            d_obs = d_features.reshape(b, self.vit_feat_dim, self.vit_size, self.vit_size)
+            d_rec = -d_pred.log_prob(d_obs).float().mean()
+            d_rec = d_rec / torch.prod(torch.Tensor(d_obs.shape[-3:])) * torch.prod(torch.Tensor(obs.shape[-3:]))
+
+            losses['loss_reconstruction'] = (self.vit_l2_ratio * d_rec + (1-self.vit_l2_ratio) * img_rec)
+            metrics['loss_l2_rec'] = img_rec
+            metrics['loss_dino_rec'] = d_rec
 
         prior_logits = prior.stoch_logits
         posterior_logits = posterior.stoch_logits
