@@ -39,7 +39,14 @@
     "Run main": {
       "extends": "python-base",
       "configuration": {
-        "program": "main.py",
+        "program": "rl_sandbox/train.py",
+        "args": ["logger.type='tensorboard'", "training.prefill=0", "training.batch_size=4"]
+      }
+    },
+    "Run dino": {
+      "extends": "python-base",
+      "configuration": {
+        "program": "rl_sandbox/vision/slot_attention.py",
         "args": []
       }
     }

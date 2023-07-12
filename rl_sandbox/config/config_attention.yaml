@@ -1,0 +1,44 @@
+defaults:
+  - agent: dreamer_v2_slotted_attention
+  - env: crafter
+  - training: crafter
+  - logger: wandb
+  - _self_
+  - override hydra/launcher: joblib
+
+seed: 42
+device_type: cuda
+
+logger:
+  message: Crafter attention 2x sched, fixed layer, dis f16
+  log_grads: false
+
+training:
+  checkpoint_path: null
+  steps: 1e6
+  val_logs_every: 2e4
+
+validation:
+  rollout_num: 5
+  visualize: true
+  metrics:
+    - _target_: rl_sandbox.metrics.EpisodeMetricsEvaluator
+      log_video: True
+      _partial_: true
+    - _target_: rl_sandbox.metrics.SlottedDreamerMetricsEvaluator
+      _partial_: true
+
+debug:
+  profiler: false
+
+hydra:
+  #mode: MULTIRUN
+  mode: RUN
+  launcher:
+    n_jobs: 1
+  #  n_jobs: 8
+  #sweeper:
+  #  params:
+  #    agent.world_model.full_qk_from: 1,2e4
+  #    agent.world_model.symmetric_qk: true,false
+  #    agent.world_model.attention_block_num: 1,3

@@ -1,0 +1,3 @@
+defaults:
+  - atari
+task_name: freeway

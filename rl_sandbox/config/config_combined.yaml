@@ -1,0 +1,52 @@
+defaults:
+  - agent: dreamer_v2_slotted_combined
+  - env: crafter
+  - logger: tensorboard
+  - training: crafter
+  - _self_
+  - override hydra/launcher: joblib
+
+seed: 42
+device_type: cuda
+
+agent:
+  world_model:
+    #encode_vit: true
+    decode_vit: false
+    #vit_l2_ratio: 1.0
+    kl_loss_scale: 1e2
+
+logger:
+  message: Combined, without dino
+  log_grads: false
+
+training:
+  checkpoint_path: null
+  steps: 1e6
+  val_logs_every: 2e4
+
+validation:
+  rollout_num: 5
+  visualize: true
+  metrics:
+    - _target_: rl_sandbox.metrics.EpisodeMetricsEvaluator
+      log_video: True
+      _partial_: true
+    - _target_: rl_sandbox.metrics.SlottedDreamerMetricsEvaluator
+      _partial_: true
+
+debug:
+  profiler: false
+
+hydra:
+  #mode: MULTIRUN
+  mode: RUN
+  launcher:
+    n_jobs: 1
+  #sweeper:
+  #  params:
+  #    agent.world_model.slots_num: 3,6
+  #    agent.world_model.per_slot_rec_loss: true
+  #    agent.world_model.mask_combination: soft,hard
+  #    agent.world_model.kl_loss_scale: 1e2
+  #    agent.world_model.vit_l2_ratio: 0.1,1e-3

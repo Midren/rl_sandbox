@@ -1,0 +1,78 @@
+_target_: rl_sandbox.agents.DreamerV2
+
+clip_rewards: tanh
+imagination_horizon: 15
+batch_cluster_size: 50
+layer_norm: true
+
+world_model:
+  _target_: rl_sandbox.agents.dreamer.world_model_slots_attention.WorldModel
+  _partial_: true
+  batch_cluster_size: ${..batch_cluster_size}
+  latent_dim: 32
+  latent_classes: 32
+  rssm_dim: 200
+  slots_num: 4
+  slots_iter_num: 2
+  kl_loss_scale: 1000
+  kl_loss_balancing: 0.8
+  kl_free_nats: 0.0005
+  discrete_rssm: false
+  decode_vit: true
+  vit_l2_ratio: 0.75
+  use_prev_slots: false
+  encode_vit: false
+  predict_discount: false
+  layer_norm: ${..layer_norm}
+
+actor:
+  _target_: rl_sandbox.agents.dreamer.ac.ImaginativeActor
+  _partial_: true
+  # mixing of reinforce and maximizing value func
+  # for dm_control it is zero in Dreamer (Atari 1)
+  reinforce_fraction: null
+  entropy_scale: 1e-4
+  layer_norm: ${..layer_norm}
+
+critic:
+  _target_: rl_sandbox.agents.dreamer.ac.ImaginativeCritic
+  _partial_: true
+  discount_factor: 0.999
+  update_interval: 100
+  # [0-1], 1 means hard update
+  soft_update_fraction: 1
+  # Lambda parameter for trainin deeper multi-step prediction
+  value_target_lambda: 0.95
+  layer_norm: ${..layer_norm}
+
+wm_optim:
+  _target_: rl_sandbox.utils.optimizer.Optimizer
+  _partial_: true
+  lr_scheduler:
+    - _target_: rl_sandbox.utils.optimizer.WarmupScheduler
+      _partial_: true
+      warmup_steps: 1e3
+    #- _target_: rl_sandbox.utils.optimizer.DecayScheduler
+    #  _partial_: true
+    #  decay_rate: 0.5
+    #  decay_steps: 5e5
+  lr: 3e-4
+  eps: 1e-5
+  weight_decay: 1e-6
+  clip: 100
+
+actor_optim:
+  _target_: rl_sandbox.utils.optimizer.Optimizer
+  _partial_: true
+  lr: 8e-5
+  eps: 1e-5
+  weight_decay: 1e-6
+  clip: 100
+
+critic_optim:
+  _target_: rl_sandbox.utils.optimizer.Optimizer
+  _partial_: true
+  lr: 8e-5
+  eps: 1e-5
+  weight_decay: 1e-6
+  clip: 100

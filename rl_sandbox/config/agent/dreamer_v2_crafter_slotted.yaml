@@ -1,0 +1,14 @@
+defaults:
+  - dreamer_v2_crafter
+  - _self_
+
+world_model:
+  _target_: rl_sandbox.agents.dreamer.world_model_slots.WorldModel
+  rssm_dim: 512
+  slots_num: 6
+  slots_iter_num: 2
+  kl_loss_scale: 1e2
+  decode_vit: true
+  use_prev_slots: false
+  vit_l2_ratio: 0.1
+  encode_vit: false

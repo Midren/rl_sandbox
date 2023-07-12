@@ -1,0 +1,43 @@
+defaults:
+  - agent: dreamer_v2
+  - env: dm_quadruped
+  - training: dm
+  - _self_
+  - override hydra/launcher: joblib
+
+seed: 42
+device_type: cuda
+
+logger:
+  type: tensorboard
+  message: Quadruped with DINO features
+  log_grads: false
+
+training:
+  checkpoint_path: null
+  steps: 1e6
+  val_logs_every: 1e4
+
+
+validation:
+  rollout_num: 5
+  visualize: true
+  metrics:
+    - _target_: rl_sandbox.metrics.EpisodeMetricsEvaluator
+      log_video: True
+      _partial_: true
+    - _target_: rl_sandbox.metrics.DreamerMetricsEvaluator
+      _partial_: true
+
+debug:
+  profiler: false
+
+hydra:
+  #mode: MULTIRUN
+  mode: RUN
+  launcher:
+    #n_jobs: 8
+    n_jobs: 1
+  sweeper:
+    #params:
+    #  agent.world_model.kl_loss_scale: 1e-4,1e-3,1e-2,0.1,1.0,1e2,1e3,1e4

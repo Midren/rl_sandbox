@@ -1,0 +1,44 @@
+defaults:
+  - agent: dreamer_v2_crafter
+  - env: crafter
+  - training: crafter
+  - logger: wandb
+  - _self_
+  - override hydra/launcher: joblib
+
+seed: 42
+device_type: cuda
+
+logger:
+  message: Crafter default
+  log_grads: false
+
+training:
+  checkpoint_path: null
+  steps: 1e6
+  val_logs_every: 2e4
+
+validation:
+  rollout_num: 5
+  visualize: true
+  metrics:
+    - _target_: rl_sandbox.metrics.EpisodeMetricsEvaluator
+      log_video: True
+      _partial_: true
+    - _target_: rl_sandbox.metrics.DreamerMetricsEvaluator
+      _partial_: true
+
+debug:
+  profiler: false
+
+hydra:
+  #mode: MULTIRUN
+  mode: RUN
+  launcher:
+    n_jobs: 1
+  #sweeper:
+  #  params:
+  #    agent.world_model._target_: rl_sandbox.agents.dreamer.world_model_slots_combined.WorldModel,rl_sandbox.agents.dreamer.world_model_slots_attention.WorldModel
+  #    agent.world_model.vit_l2_ratio: 0.1,0.5
+  #    agent.world_model.kl_loss_scale: 1e1,1e2,1e3,1e4
+  #    agent.world_model.vit_l2_ratio: 0.1,0.9
