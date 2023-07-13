@@ -39,7 +39,7 @@ class Rollout:
     def __len__(self):
         return len(self.obs)
 
-    def to(self, device: str, non_blocking: bool = True):
+    def to(self, device: str, non_blocking: bool = False):
         self.obs = self.obs.to(device, non_blocking=True)
         self.actions = self.actions.to(device, non_blocking=True)
         self.rewards = self.rewards.to(device, non_blocking=True)
@@ -158,11 +158,8 @@ class ReplayBuffer:
                 is_finished=torch.cat(t),
                 is_first=torch.cat(is_first),
                 additional_data={k: torch.cat(v) for k,v in additional.items()}
-                ).to(self.device, non_blocking=True)
+                ).to(self.device, non_blocking=False)
 
 
 # TODO:
-# [X] Rewrite to use only torch containers
-# [X] Add preprocessing step on adding to replay buffer
-# [X] Add possibility to store additional auxilary data (dino encodings)
 # [ ] (Optional) Utilize torch's dataloader for async sampling

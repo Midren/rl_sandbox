@@ -88,7 +88,8 @@ class WorldModel(nn.Module):
         if decode_vit:
             self.dino_predictor = Decoder(self.state_size,
                                           norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
-                                          channel_step=192,
+                                          conv_kernel_sizes=[3],
+                                          channel_step=2*self.vit_feat_dim,
                                           kernel_sizes=self.decoder_kernels,
                                           output_channels=self.vit_feat_dim,
                                           return_dist=True)
@@ -214,14 +215,14 @@ class WorldModel(nn.Module):
                 x_r = self.image_predictor(posterior.combined.transpose(0, 1).flatten(0, 1))
                 img_rec = -x_r.log_prob(obs).float().mean()
             else:
-                img_rec = 0
+                img_rec = torch.tensor(0, device=obs.device)
                 x_r_detached = self.image_predictor(posterior.combined.transpose(0, 1).flatten(0, 1).detach())
                 losses['loss_reconstruction_img'] = -x_r_detached.log_prob(obs).float().mean()
 
             d_pred = self.dino_predictor(posterior.combined.transpose(0, 1).flatten(0, 1))
             d_obs = d_features.reshape(b, self.vit_feat_dim, self.vit_size, self.vit_size)
             d_rec = -d_pred.log_prob(d_obs).float().mean()
-            d_rec = d_rec / torch.prod(torch.Tensor(d_obs.shape[-3:])) * torch.prod(torch.Tensor(obs.shape[-3:]))
+            d_rec = d_rec / torch.prod(torch.tensor(d_obs.shape[-3:])) * torch.prod(torch.tensor(obs.shape[-3:]))
 
             losses['loss_reconstruction'] = (self.vit_l2_ratio * d_rec + (1-self.vit_l2_ratio) * img_rec)
             metrics['loss_l2_rec'] = img_rec

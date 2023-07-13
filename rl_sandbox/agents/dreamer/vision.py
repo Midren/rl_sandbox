@@ -41,39 +41,48 @@ class Decoder(nn.Module):
                  kernel_sizes=[5, 5, 6, 6],
                  channel_step = 48,
                  output_channels=3,
+                 conv_kernel_sizes=[],
                  return_dist=True):
         super().__init__()
         layers = []
         self.channel_step = channel_step
-        # 2**(len(kernel_sizes)-1)*channel_step
-        self.convin = nn.Linear(input_size, 32 * self.channel_step)
+        self.in_channels = 2 **(len(kernel_sizes)-1) * self.channel_step
+        in_channels = self.in_channels
+        self.convin = nn.Linear(input_size, in_channels)
         self.return_dist = return_dist
 
-        in_channels = 32 * self.channel_step  #2**(len(kernel_sizes) - 1) * self.channel_step
         for i, k in enumerate(kernel_sizes):
             out_channels = 2**(len(kernel_sizes) - i - 2) * self.channel_step
             if i == len(kernel_sizes) - 1:
-                out_channels = 3
+                out_channels = output_channels
                 layers.append(nn.ConvTranspose2d(in_channels,
                                                  output_channels,
                                                  kernel_size=k,
                                                  stride=2,
                                                  output_padding=0))
             else:
-                layers.append(norm_layer(1, in_channels))
                 layers.append(
                     nn.ConvTranspose2d(in_channels,
                                        out_channels,
                                        kernel_size=k,
                                        stride=2,
                                        output_padding=0))
+                layers.append(norm_layer(1, out_channels))
                 layers.append(nn.ELU(inplace=True))
+                for k in conv_kernel_sizes:
+                    layers.append(
+                        nn.Conv2d(out_channels,
+                                  out_channels,
+                                  kernel_size=k,
+                                  padding='same'))
+                    layers.append(norm_layer(1, out_channels))
+                    layers.append(nn.ELU(inplace=True))
             in_channels = out_channels
         self.net = nn.Sequential(*layers)
 
     def forward(self, X):
         x = self.convin(X)
-        x = x.view(-1, 32 * self.channel_step, 1, 1)
+        x = x.view(-1, self.in_channels, 1, 1)
         if self.return_dist:
             return td.Independent(td.Normal(self.net(x), 1.0), 3)
         else:

@@ -115,12 +115,12 @@ class WorldModel(nn.Module):
 
         if decode_vit:
             self.dino_predictor = Decoder(rssm_dim + latent_dim * latent_classes,
-                    norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
-                    channel_step=192,
-                    # kernel_sizes=[5, 5, 4], # for size 224x224
-                    kernel_sizes=[3, 4],
-                    output_channels=self.vit_feat_dim+1,
-                    return_dist=False)
+                                          norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
+                                          conv_kernel_sizes=[3],
+                                          channel_step=2*self.vit_feat_dim,
+                                          kernel_sizes=self.decoder_kernels,
+                                          output_channels=self.vit_feat_dim+1,
+                                          return_dist=False)
         self.image_predictor = Decoder(
             rssm_dim + latent_dim * latent_classes,
             norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
@@ -349,7 +349,7 @@ class WorldModel(nn.Module):
 
                 losses['loss_reconstruction_img'] = img_rec_detached
 
-            decoded_feats, masks = self.dino_predictor(posterior.combined_slots.transpose(0, 1).flatten(0, 1)).reshape(b, -1, self.vit_feat_dim+1, 8, 8).split([self.vit_feat_dim, 1], dim=2)
+            decoded_feats, masks = self.dino_predictor(posterior.combined_slots.transpose(0, 1).flatten(0, 1)).reshape(b, -1, self.vit_feat_dim+1, self.vit_size, self.vit_size).split([self.vit_feat_dim, 1], dim=2)
             feat_mask = self.slot_mask(masks)
 
             d_obs = d_features.reshape(b, self.vit_feat_dim, self.vit_size, self.vit_size)
@@ -365,7 +365,7 @@ class WorldModel(nn.Module):
                 d_pred = td.Independent(td.Normal(torch.sum(decoded_feats, dim=1), 1.0), 3)
                 d_rec = -d_pred.log_prob(d_obs).float().mean()
 
-            d_rec = d_rec / torch.prod(torch.Tensor(d_obs.shape[-3:])) * torch.prod(torch.Tensor(obs.shape[-3:]))
+            d_rec = d_rec / torch.prod(torch.tensor(d_obs.shape[-3:])) * torch.prod(torch.tensor(obs.shape[-3:]))
             losses['loss_reconstruction'] = (self.vit_l2_ratio * d_rec + (1-self.vit_l2_ratio) * img_rec)
             metrics['loss_l2_rec'] = img_rec
             metrics['loss_dino_rec'] = d_rec
