@@ -1,6 +1,5 @@
 import typing as t
 
-import math
 import torch
 import torch.distributions as td
 import torchvision as tv
@@ -9,7 +8,7 @@ from torch.nn import functional as F
 
 from rl_sandbox.agents.dreamer import Dist, Normalizer, View
 from rl_sandbox.agents.dreamer.rssm_slots_combined import RSSM, State
-from rl_sandbox.agents.dreamer.vision import Decoder, Encoder, ViTDecoder
+from rl_sandbox.agents.dreamer.vision import Decoder, Encoder
 from rl_sandbox.utils.dists import DistLayer
 from rl_sandbox.utils.fc_nn import fc_nn_generator
 from rl_sandbox.vision.dino import ViTFeat
@@ -94,7 +93,7 @@ class WorldModel(nn.Module):
         else:
             self.encoder = Encoder(norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
                                    kernel_sizes=[4, 4, 4],
-                                   channel_step=96,
+                                   channel_step=48,
                                    double_conv=True,
                                    flatten_output=False)
 
@@ -223,7 +222,6 @@ class WorldModel(nn.Module):
         else:
             embed = self.encoder(obs)
         embed_with_pos_enc = self.positional_augmenter_inp(embed)
-        # embed_c = embed.reshape(b // self.cluster_size, self.cluster_size, -1)
 
         pre_slot_features = self.slot_mlp(
             embed_with_pos_enc.permute(0, 2, 3, 1).reshape(b, -1, self.n_dim))
@@ -256,22 +254,18 @@ class WorldModel(nn.Module):
             d_features = additional['d_features']
 
         prev_state, prev_slots = self.get_initial_state(b // self.cluster_size)
+        if self.use_prev_slots:
+            prev_slots = self.slot_attention.generate_initial(b // self.cluster_size).repeat(self.cluster_size, 1, 1, 1).transpose(0, 1)
+            slots_c = self.slot_attention(pre_slot_features_c.flatten(0, 1), prev_slots.flatten(0, 1)).reshape(b // self.cluster_size, self.cluster_size, self.slots_num, -1).transpose(0, 1)
+        else:
+            slots_c = self.slot_attention(pre_slot_features_c.flatten(0, 1)).reshape(b, seq_num, self.slots_num, -1).transpose(0, 1)
+
         for t in range(self.cluster_size):
             # s_t <- 1xB^xHxWx3
-            pre_slot_feature_t, a_t, first_t = pre_slot_features_c[:,
-                                                                   t], a_c[:, t].unsqueeze(
-                                                                       0
-                                                                   ), first_c[:,
-                                                                              t].unsqueeze(
-                                                                                  0)
+            slots_t, a_t, first_t = (slots_c[:,t],
+                                                a_c[:, t].unsqueeze(0),
+                                                first_c[:,t].unsqueeze(0))
             a_t = a_t * (1 - first_t)
-
-            slots_t = self.slot_attention(pre_slot_feature_t, prev_slots)
-            # FIXME: prev_slots was not used properly, need to rerun test
-            if self.use_prev_slots:
-                prev_slots = self.slot_attention.prev_slots
-            else:
-                prev_slots = None
 
             prior, posterior, diff = self.recurrent_model.forward(
                 prev_state, slots_t.unsqueeze(0), a_t)
@@ -374,5 +368,4 @@ class WorldModel(nn.Module):
                              self.kl_beta * losses['loss_kl_reg'] + self.discount_scale*losses['loss_discount_pred'])
 
         return losses, posterior, metrics
-
 

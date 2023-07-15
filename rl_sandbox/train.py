@@ -1,7 +1,7 @@
 import random
 import os
 os.environ['MUJOCO_GL'] = 'egl'
-os.environ["WANDB_MODE"]="offline"
+# os.environ["WANDB_MODE"]="offline"
 
 import crafter
 import hydra

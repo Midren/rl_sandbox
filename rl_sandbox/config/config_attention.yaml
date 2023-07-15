@@ -7,7 +7,7 @@ defaults:
   - override hydra/launcher: joblib
 
 seed: 42
-device_type: cuda
+device_type: cuda:1
 
 agent:
   world_model:
@@ -20,7 +20,7 @@ agent:
     kl_loss_scale: 100.0
 
 logger:
-  message: Attention, without dino, kl=100, 3 iter, 192 n_dim
+  message: Attention, without dino, prev_slots, optimized inference
   log_grads: false
 
 training:

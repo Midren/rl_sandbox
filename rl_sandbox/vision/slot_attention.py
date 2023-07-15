@@ -43,14 +43,18 @@ class SlotAttention(nn.Module):
         self.inputs_norm = nn.LayerNorm(self.n_dim)
         self.prev_slots = None
 
+    def generate_initial(self, batch: int):
+        mu = self.slots_mu.expand(batch, self.n_slots, -1)
+        sigma = self.slots_logsigma.exp().expand(batch, self.n_slots, -1)
+        slots = mu + sigma * torch.randn(mu.shape, device=mu.device)
+        return slots
+
     def forward(self, X: Float[torch.Tensor, 'batch seq n_dim'], prev_slots: t.Optional[Float[torch.Tensor, 'batch num_slots n_dim']]) -> Float[torch.Tensor, 'batch num_slots n_dim']:
         batch, _, _ = X.shape
         k, v = self.inputs_proj(self.inputs_norm(X)).chunk(2, dim=-1)
 
         if prev_slots is None:
-            mu = self.slots_mu.expand(batch, self.n_slots, -1)
-            sigma = self.slots_logsigma.exp().expand(batch, self.n_slots, -1)
-            slots = mu + sigma * torch.randn(mu.shape, device=X.device)
+            slots = self.generate_initial(batch)
             self.prev_slots = slots.clone()
         else:
             slots = prev_slots

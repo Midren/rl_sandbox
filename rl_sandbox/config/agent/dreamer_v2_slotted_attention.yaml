@@ -11,7 +11,7 @@ world_model:
   encode_vit: false
   decode_vit: true
   mask_combination: soft
-  use_prev_slots: false
+  use_prev_slots: true
   per_slot_rec_loss: false
   vit_l2_ratio: 0.1
 
