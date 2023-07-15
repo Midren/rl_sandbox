@@ -48,7 +48,7 @@ class WorldModel(nn.Module):
         self.vit_img_size = vit_img_size
         self.per_slot_rec_loss = per_slot_rec_loss
 
-        self.n_dim = 384
+        self.n_dim = 192
 
         self.recurrent_model = RSSM(
             latent_dim,
@@ -98,7 +98,7 @@ class WorldModel(nn.Module):
                                    double_conv=True,
                                    flatten_output=False)
 
-        self.slot_attention = SlotAttention(slots_num, self.n_dim, slots_iter_num)
+        self.slot_attention = SlotAttention(slots_num, self.n_dim, slots_iter_num, use_prev_slots)
         if self.encode_vit:
             self.positional_augmenter_inp = PositionalEmbedding(self.n_dim, (4, 4))
         else:
@@ -269,7 +269,7 @@ class WorldModel(nn.Module):
             slots_t = self.slot_attention(pre_slot_feature_t, prev_slots)
             # FIXME: prev_slots was not used properly, need to rerun test
             if self.use_prev_slots:
-                prev_slots = slots_t
+                prev_slots = self.slot_attention.prev_slots
             else:
                 prev_slots = None
 

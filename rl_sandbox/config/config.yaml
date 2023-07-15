@@ -14,9 +14,10 @@ agent:
     decode_vit: true
     vit_img_size: 224
     vit_l2_ratio: 0.5
+    kl_loss_scale: 1.0
 
 logger:
-  message: Crafter decode vit
+  message: New decoder
   log_grads: false
 
 training:
@@ -38,13 +39,14 @@ debug:
   profiler: false
 
 hydra:
-  mode: MULTIRUN
-  #mode: RUN
-  launcher:
-    n_jobs: 8
-  sweeper:
-    params:
-      agent.world_model.vit_img_size: 64,224
-      agent.world_model.kl_loss_scale: 0.1,1
-      agent.world_model.vit_l2_ratio: 0.1,0.9
+  #mode: MULTIRUN
+  mode: RUN
+  #launcher:
+  #  n_jobs: 1
+  #sweeper:
+    #params:
+    #  agent.world_model.vit_img_size: 224
+    #  agent.world_model.kl_loss_scale: 1
+    #  agent.world_model.kl_free_nats: 0.0,1.0
+    #  agent.world_model.vit_l2_ratio: 0.5
 

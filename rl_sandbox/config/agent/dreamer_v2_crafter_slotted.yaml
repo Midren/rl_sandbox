@@ -9,6 +9,6 @@ world_model:
   slots_iter_num: 2
   kl_loss_scale: 1e2
   decode_vit: true
-  use_prev_slots: false
+  use_prev_slots: true
   vit_l2_ratio: 0.1
   encode_vit: false

@@ -270,6 +270,8 @@ class SlottedDinoDreamerMetricsEvaluator(SlottedDreamerMetricsEvaluator):
         vit_slots_video = []
         rews = []
 
+        vit_size = self.agent.world_model.vit_size
+
         state = None
         prev_slots = None
         for idx, (o, a) in enumerate(list(zip(obs, actions))):
@@ -284,7 +286,7 @@ class SlottedDinoDreamerMetricsEvaluator(SlottedDreamerMetricsEvaluator):
             decoded_imgs = decoded_imgs * img_mask
             video_r = torch.sum(decoded_imgs, dim=1)
 
-            _, vit_masks = self.agent.world_model.dino_predictor(state.combined_slots.flatten(0, 1)).reshape(-1, self.agent.world_model.slots_num, self.agent.world_model.vit_feat_dim+1, 8, 8).split([self.agent.world_model.vit_feat_dim, 1], dim=2)
+            _, vit_masks = self.agent.world_model.dino_predictor(state.combined_slots.flatten(0, 1)).reshape(-1, self.agent.world_model.slots_num, self.agent.world_model.vit_feat_dim+1, vit_size, vit_size).split([self.agent.world_model.vit_feat_dim, 1], dim=2)
             vit_mask = F.softmax(vit_masks, dim=1)
             upscale = tv.transforms.Resize(64, antialias=True)
 
@@ -308,7 +310,7 @@ class SlottedDinoDreamerMetricsEvaluator(SlottedDreamerMetricsEvaluator):
             decoded_imgs = decoded_imgs * img_mask
             video_r = torch.sum(decoded_imgs, dim=1)
 
-            _, vit_masks = self.agent.world_model.dino_predictor(states.combined_slots[1:].flatten(0, 1)).reshape(-1, self.agent.world_model.slots_num, self.agent.world_model.vit_feat_dim+1, 8, 8).split([self.agent.world_model.vit_feat_dim, 1], dim=2)
+            _, vit_masks = self.agent.world_model.dino_predictor(states.combined_slots[1:].flatten(0, 1)).reshape(-1, self.agent.world_model.slots_num, self.agent.world_model.vit_feat_dim+1, vit_size, vit_size).split([self.agent.world_model.vit_feat_dim, 1], dim=2)
             vit_mask = F.softmax(vit_masks, dim=1)
             upscale = tv.transforms.Resize(64, antialias=True)
             upscaled_mask = upscale(vit_mask.permute(0, 1, 4, 2, 3).squeeze())

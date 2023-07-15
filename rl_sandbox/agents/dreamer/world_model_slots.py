@@ -45,7 +45,7 @@ class WorldModel(nn.Module):
         self.vit_l2_ratio = vit_l2_ratio
         self.vit_img_size = vit_img_size
 
-        self.n_dim = 384
+        self.n_dim = 192
 
         self.recurrent_model = RSSM(
             latent_dim,
@@ -90,11 +90,11 @@ class WorldModel(nn.Module):
         else:
             self.encoder = Encoder(norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
                                    kernel_sizes=[4, 4, 4],
-                                   channel_step=96,
+                                   channel_step=48,
                                    double_conv=True,
                                    flatten_output=False)
 
-        self.slot_attention = SlotAttention(slots_num, self.n_dim, slots_iter_num)
+        self.slot_attention = SlotAttention(slots_num, self.n_dim, slots_iter_num, use_prev_slots)
         if self.encode_vit:
             self.positional_augmenter_inp = PositionalEmbedding(self.n_dim, (4, 4))
         else:
@@ -265,7 +265,7 @@ class WorldModel(nn.Module):
             slots_t = self.slot_attention(pre_slot_feature_t, prev_slots)
             # FIXME: prev_slots was not used properly, need to rerun test
             if self.use_prev_slots:
-                prev_slots = slots_t
+                prev_slots = self.slot_attention.prev_slots
             else:
                 prev_slots = None
 
@@ -308,7 +308,7 @@ class WorldModel(nn.Module):
                 x_r_detached = td.Independent(td.Normal(torch.sum(decoded_imgs_detached, dim=1), 1.0), 3)
                 losses['loss_reconstruction_img'] = -x_r_detached.log_prob(obs).float().mean()
 
-            decoded_feats, masks = d_features.reshape(b, -1, self.vit_feat_dim+1, self.vit_size, self.vit_size).split([self.vit_feat_dim, 1], dim=2)
+            decoded_feats, masks = self.dino_predictor(posterior.combined_slots.transpose(0, 1).flatten(0, 2)).reshape(b, -1, self.vit_feat_dim+1, self.vit_size, self.vit_size).split([self.vit_feat_dim, 1], dim=2)
             feat_mask = self.slot_mask(masks)
             decoded_feats = decoded_feats * feat_mask
             d_pred = td.Independent(td.Normal(torch.sum(decoded_feats, dim=1), 1.0), 3)

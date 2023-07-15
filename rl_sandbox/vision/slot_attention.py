@@ -11,7 +11,7 @@ from rl_sandbox.vision.dino import ViTFeat
 from rl_sandbox.utils.logger import Logger
 
 class SlotAttention(nn.Module):
-    def __init__(self, num_slots: int, n_dim: int, n_iter: int):
+    def __init__(self, num_slots: int, n_dim: int, n_iter: int, use_prev_slots: bool):
         super().__init__()
 
         self.n_slots = num_slots
@@ -20,15 +20,20 @@ class SlotAttention(nn.Module):
         self.scale = self.n_dim**(-1/2)
         self.epsilon = 1e-8
 
-        self.slots_mu = nn.Parameter(torch.randn(1, num_slots, self.n_dim))
-        self.slots_logsigma = nn.Parameter(torch.zeros(1, num_slots, self.n_dim))
+        self.use_prev_slots = use_prev_slots
+        if use_prev_slots:
+            self.slots_mu = nn.Parameter(torch.randn(1, 1, self.n_dim))
+            self.slots_logsigma = nn.Parameter(torch.zeros(1, 1, self.n_dim))
+        else:
+            self.slots_mu = nn.Parameter(torch.randn(1, num_slots, self.n_dim))
+            self.slots_logsigma = nn.Parameter(torch.zeros(1, num_slots, self.n_dim))
         nn.init.xavier_uniform_(self.slots_logsigma)
 
         self.slots_proj = nn.Linear(n_dim, n_dim)
         self.slots_proj_2 = nn.Sequential(
-                nn.Linear(n_dim, n_dim*4),
+                nn.Linear(n_dim, n_dim*2),
                 nn.ReLU(inplace=True),
-                nn.Linear(n_dim*4, n_dim),
+                nn.Linear(n_dim*2, n_dim),
             )
         self.slots_norm = nn.LayerNorm(self.n_dim)
         self.slots_norm_2 = nn.LayerNorm(self.n_dim)
@@ -36,15 +41,21 @@ class SlotAttention(nn.Module):
 
         self.inputs_proj = nn.Linear(n_dim, n_dim*2)
         self.inputs_norm = nn.LayerNorm(self.n_dim)
+        self.prev_slots = None
 
     def forward(self, X: Float[torch.Tensor, 'batch seq n_dim'], prev_slots: t.Optional[Float[torch.Tensor, 'batch num_slots n_dim']]) -> Float[torch.Tensor, 'batch num_slots n_dim']:
         batch, _, _ = X.shape
         k, v = self.inputs_proj(self.inputs_norm(X)).chunk(2, dim=-1)
 
         if prev_slots is None:
-            slots = self.slots_mu + self.slots_logsigma.exp() * torch.randn(batch, self.n_slots, self.n_dim, device=X.device)
+            mu = self.slots_mu.expand(batch, self.n_slots, -1)
+            sigma = self.slots_logsigma.exp().expand(batch, self.n_slots, -1)
+            slots = mu + sigma * torch.randn(mu.shape, device=X.device)
+            self.prev_slots = slots.clone()
         else:
             slots = prev_slots
+
+        self.last_attention = None
 
         for _ in range(self.n_iter):
             slots_prev = slots
@@ -53,6 +64,8 @@ class SlotAttention(nn.Module):
 
             attn = F.softmax(self.scale*torch.einsum('bik,bjk->bij', q, k), dim=1) + self.epsilon
             attn = attn / attn.sum(dim=-1, keepdim=True)
+
+            self.last_attention = attn
 
             updates = torch.einsum('bij,bjk->bik', attn, v) / self.n_slots
             slots = self.slots_reccur(updates.reshape(-1, self.n_dim), slots_prev.reshape(-1, self.n_dim)).reshape(batch, self.n_slots, self.n_dim)

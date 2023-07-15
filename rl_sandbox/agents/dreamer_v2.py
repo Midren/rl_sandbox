@@ -162,7 +162,7 @@ class DreamerV2(RlAgent):
         obs, a, r, is_finished, is_first, additional = unpack(rollout_chunks)
         if self.is_discrete:
             a = F.one_hot(a.to(torch.int64), num_classes=self.actions_num).squeeze()
-        discount_factors = (1 - is_finished).float()
+        discount_factors = self.critic.gamma*(1 - is_finished).float()
         first_flags = is_first.float()
 
         # take some latent embeddings as initial
