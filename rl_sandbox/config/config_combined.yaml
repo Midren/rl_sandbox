@@ -7,7 +7,7 @@ defaults:
   - override hydra/launcher: joblib
 
 seed: 42
-device_type: cuda:0
+device_type: cuda:1
 
 agent:
   world_model:

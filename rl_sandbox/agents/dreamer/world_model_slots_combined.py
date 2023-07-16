@@ -138,10 +138,10 @@ class WorldModel(nn.Module):
                                                   layer_norm=layer_norm,
                                                   final_activation=DistLayer('binary'))
         self.reward_normalizer = Normalizer(momentum=1.00, scale=1.0, eps=1e-8)
-        self.slot_indexer = torch.linspace(0,
+        self.register_buffer('slot_indexer',  torch.linspace(0,
                                           self.slots_num-1,
                                           self.slots_num,
-                                          dtype=torch.long)
+                                          dtype=torch.long))
 
     def slot_mask(self, masks: torch.Tensor) -> torch.Tensor:
         match self.mask_combination:
@@ -219,7 +219,6 @@ class WorldModel(nn.Module):
         _, posterior, _ = self.recurrent_model.forward(state, slots_t.unsqueeze(0),
                                                        action)
 
-        pos_enc = self.state_emb(torch.linspace(0, self.slots_num-1, self.slots_num, dtype=torch.long)).unsqueeze(0).unsqueeze(0)
         return posterior, slots_t
 
     def calculate_loss(self, obs: torch.Tensor, a: torch.Tensor, r: torch.Tensor,
