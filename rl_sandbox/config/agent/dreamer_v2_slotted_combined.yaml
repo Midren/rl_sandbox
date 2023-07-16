@@ -7,10 +7,10 @@ world_model:
   rssm_dim: 512
   slots_num: 5
   slots_iter_num: 2
-  kl_loss_scale: 1e2
+  kl_loss_scale: 1.0
   encode_vit: false
   decode_vit: true
   mask_combination: soft
-  use_prev_slots: true
+  use_prev_slots: false
   per_slot_rec_loss: false
   vit_l2_ratio: 0.1

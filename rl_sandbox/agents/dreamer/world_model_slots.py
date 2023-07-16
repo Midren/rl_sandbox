@@ -236,11 +236,11 @@ class WorldModel(nn.Module):
 
         def KL(dist1, dist2):
             KL_ = torch.distributions.kl_divergence
-            kl_lhs = KL_(td.OneHotCategoricalStraightThrough(logits=dist2.detach()),
-                         td.OneHotCategoricalStraightThrough(logits=dist1)).mean()
+            kl_lhs = KL_(td.Independent(td.OneHotCategoricalStraightThrough(logits=dist2.detach()), 1),
+                         td.Independent(td.OneHotCategoricalStraightThrough(logits=dist1), 1)).mean()
             kl_rhs = KL_(
-                td.OneHotCategoricalStraightThrough(logits=dist2),
-                td.OneHotCategoricalStraightThrough(logits=dist1.detach())).mean()
+                td.Independent(td.OneHotCategoricalStraightThrough(logits=dist2), 1),
+                td.Independent(td.OneHotCategoricalStraightThrough(logits=dist1.detach()), 1)).mean()
             kl_lhs = torch.maximum(kl_lhs, self.kl_free_nats)
             kl_rhs = torch.maximum(kl_rhs, self.kl_free_nats)
             return ((self.alpha * kl_lhs + (1 - self.alpha) * kl_rhs))

@@ -7,7 +7,7 @@ defaults:
   - override hydra/launcher: joblib
 
 seed: 42
-device_type: cuda
+device_type: cuda:1
 
 agent:
   world_model:
@@ -15,9 +15,10 @@ agent:
     vit_img_size: 224
     vit_l2_ratio: 0.5
     kl_loss_scale: 1.0
+    kl_free_nats: 1.0
 
 logger:
-  message: New decoder
+  message: New decoder, fixed KL
   log_grads: false
 
 training:

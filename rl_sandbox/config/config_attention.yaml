@@ -7,7 +7,7 @@ defaults:
   - override hydra/launcher: joblib
 
 seed: 42
-device_type: cuda:1
+device_type: cuda:0
 
 agent:
   world_model:
@@ -17,10 +17,11 @@ agent:
     #vit_l2_ratio: 0.5
     slots_iter_num: 3
     slots_num: 6
-    kl_loss_scale: 100.0
+    kl_loss_scale: 1.0
+    kl_free_nats: 1.0
 
 logger:
-  message: Attention, without dino, prev_slots, optimized inference
+  message: Attention, without dino, fixed KL, 1 nat, no prev slot
   log_grads: false
 
 training:
@@ -35,6 +36,7 @@ validation:
     - _target_: rl_sandbox.metrics.EpisodeMetricsEvaluator
       log_video: True
       _partial_: true
+    #- _target_: rl_sandbox.metrics.SlottedDinoDreamerMetricsEvaluator
     - _target_: rl_sandbox.metrics.SlottedDreamerMetricsEvaluator
       _partial_: true
 

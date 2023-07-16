@@ -63,7 +63,7 @@ class DreamerMetricsEvaluator():
 
         if self.agent.is_discrete:
             self._action_probs += self._action_probs
-        self._latent_probs += self.agent._state.stoch_dist.probs.squeeze().mean(dim=0)
+        self._latent_probs += self.agent._state.stoch_dist.base_dist.probs.squeeze().mean(dim=0)
 
     def on_episode(self, logger):
         latent_hist = (self._latent_probs / self.stored_steps).detach().cpu().numpy()
@@ -152,7 +152,7 @@ class SlottedDreamerMetricsEvaluator(DreamerMetricsEvaluator):
 
         if self.agent.is_discrete:
             self._action_probs += self._action_probs
-        self._latent_probs += self.agent._state[0].stoch_dist.probs.squeeze().mean(dim=0)
+        self._latent_probs += self.agent._state[0].stoch_dist.base_dist.probs.squeeze().mean(dim=0)
 
     def on_episode(self, logger):
         wm = self.agent.world_model

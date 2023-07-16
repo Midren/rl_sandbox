@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+import torch.distributions as td
 
 from rl_sandbox.utils.dists import DistLayer
 
@@ -15,7 +16,7 @@ class View(nn.Module):
 
 
 def Dist(val):
-    return DistLayer('onehot')(val)
+    return td.Independent(DistLayer('onehot')(val), 1)
 
 
 class Normalizer(nn.Module):

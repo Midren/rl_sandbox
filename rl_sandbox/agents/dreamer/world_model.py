@@ -127,8 +127,8 @@ class WorldModel(nn.Module):
     def get_initial_state(self, batch_size: int = 1, seq_size: int = 1):
         device = next(self.parameters()).device
         return State(torch.zeros(seq_size, batch_size, self.rssm_dim, device=device),
-                            torch.zeros(seq_size, batch_size, self.latent_classes, self.latent_dim, device=device),
-                            torch.zeros(seq_size, batch_size, self.latent_classes * self.latent_dim, device=device))
+                     torch.zeros(seq_size, batch_size, self.latent_classes, self.latent_dim, device=device),
+                     torch.zeros(seq_size, batch_size, self.latent_classes * self.latent_dim, device=device))
 
     def predict_next(self, prev_state: State, action):
         prior, _ = self.recurrent_model.predict_next(prev_state, action)

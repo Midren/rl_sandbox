@@ -115,8 +115,8 @@ class WorldModel(nn.Module):
         if decode_vit:
             self.dino_predictor = Decoder(rssm_dim + latent_dim * latent_classes,
                                           norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
-                                          conv_kernel_sizes=[3],
-                                          channel_step=2*self.vit_feat_dim,
+                                          conv_kernel_sizes=[],
+                                          channel_step=self.vit_feat_dim,
                                           kernel_sizes=self.decoder_kernels,
                                           output_channels=self.vit_feat_dim+1,
                                           return_dist=False)
@@ -243,11 +243,11 @@ class WorldModel(nn.Module):
 
         def KL(dist1, dist2):
             KL_ = torch.distributions.kl_divergence
-            kl_lhs = KL_(td.OneHotCategoricalStraightThrough(logits=dist2.detach()),
-                         td.OneHotCategoricalStraightThrough(logits=dist1)).mean()
+            kl_lhs = KL_(td.Independent(td.OneHotCategoricalStraightThrough(logits=dist2.detach()), 1),
+                         td.Independent(td.OneHotCategoricalStraightThrough(logits=dist1), 1)).mean()
             kl_rhs = KL_(
-                td.OneHotCategoricalStraightThrough(logits=dist2),
-                td.OneHotCategoricalStraightThrough(logits=dist1.detach())).mean()
+                td.Independent(td.OneHotCategoricalStraightThrough(logits=dist2), 1),
+                td.Independent(td.OneHotCategoricalStraightThrough(logits=dist1.detach()), 1)).mean()
             kl_lhs = torch.maximum(kl_lhs, self.kl_free_nats)
             kl_rhs = torch.maximum(kl_rhs, self.kl_free_nats)
             return ((self.alpha * kl_lhs + (1 - self.alpha) * kl_rhs))
@@ -262,11 +262,8 @@ class WorldModel(nn.Module):
 
         self.last_attn = torch.zeros((self.slots_num, self.slots_num), device=a_c.device)
 
-        if self.use_prev_slots:
-            prev_slots = self.slot_attention.generate_initial(b // self.cluster_size).repeat(self.cluster_size, 1, 1, 1).transpose(0, 1)
-            slots_c = self.slot_attention(pre_slot_features_c.flatten(0, 1), prev_slots.flatten(0, 1)).reshape(b // self.cluster_size, self.cluster_size, self.slots_num, -1)
-        else:
-            slots_c = self.slot_attention(pre_slot_features_c.flatten(0, 1)).reshape(b, seq_num, self.slots_num, -1)
+        prev_slots = self.slot_attention.generate_initial(b // self.cluster_size).repeat(self.cluster_size, 1, 1, 1).transpose(0, 1)
+        slots_c = self.slot_attention(pre_slot_features_c.flatten(0, 1), prev_slots.flatten(0, 1)).reshape(b // self.cluster_size, self.cluster_size, self.slots_num, -1)
 
         for t in range(self.cluster_size):
             # s_t <- 1xB^xHxWx3

@@ -110,8 +110,8 @@ class WorldModel(nn.Module):
         if decode_vit:
             self.dino_predictor = Decoder(rssm_dim + latent_dim * latent_classes,
                                           norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
-                                          conv_kernel_sizes=[3],
-                                          channel_step=2*self.vit_feat_dim,
+                                          conv_kernel_sizes=[],
+                                          channel_step=self.vit_feat_dim,
                                           kernel_sizes=self.decoder_kernels,
                                           output_channels=self.vit_feat_dim+1,
                                           return_dist=False)
@@ -190,6 +190,7 @@ class WorldModel(nn.Module):
             discount_factors = self.discount_predictor(prior.combined).sample()
         else:
             discount_factors = torch.ones_like(reward)
+
         return prior, reward, discount_factors
 
     def get_latent(self, obs: torch.Tensor, action, state: t.Optional[tuple[State, torch.Tensor]]) -> t.Tuple[State, torch.Tensor]:
@@ -297,7 +298,6 @@ class WorldModel(nn.Module):
             else:
                 x_r = td.Independent(td.Normal(torch.sum(decoded_imgs, dim=1), 1.0), 3)
                 img_rec = -x_r.log_prob(obs).float().mean()
-
             losses['loss_reconstruction'] = img_rec
         else:
             if self.vit_l2_ratio != 1.0:
