@@ -98,6 +98,8 @@ class WorldModel(nn.Module):
                                    flatten_output=False)
 
         self.slot_attention = SlotAttention(slots_num, self.n_dim, slots_iter_num, use_prev_slots)
+        self.state_emb = nn.Embedding(slots_num, self.state_size // slots_num)
+        self.slot_emb = nn.Embedding(slots_num, self.n_dim)
         if self.encode_vit:
             self.positional_augmenter_inp = PositionalEmbedding(self.n_dim, (4, 4))
         else:
@@ -136,6 +138,10 @@ class WorldModel(nn.Module):
                                                   layer_norm=layer_norm,
                                                   final_activation=DistLayer('binary'))
         self.reward_normalizer = Normalizer(momentum=1.00, scale=1.0, eps=1e-8)
+        self.slot_indexer = torch.linspace(0,
+                                          self.slots_num-1,
+                                          self.slots_num,
+                                          dtype=torch.long)
 
     def slot_mask(self, masks: torch.Tensor) -> torch.Tensor:
         match self.mask_combination:
@@ -180,7 +186,8 @@ class WorldModel(nn.Module):
                         batch_size,
                         self.slots_num,
                         self.latent_classes * self.latent_dim,
-                        device=device)), None
+                        device=device),
+            self.state_emb(self.slot_indexer).unsqueeze(0).unsqueeze(0)), None
 
     def predict_next(self, prev_state: State, action):
         prior, _ = self.recurrent_model.predict_next(prev_state, action)
@@ -211,6 +218,8 @@ class WorldModel(nn.Module):
 
         _, posterior, _ = self.recurrent_model.forward(state, slots_t.unsqueeze(0),
                                                        action)
+
+        pos_enc = self.state_emb(torch.linspace(0, self.slots_num-1, self.slots_num, dtype=torch.long)).unsqueeze(0).unsqueeze(0)
         return posterior, slots_t
 
     def calculate_loss(self, obs: torch.Tensor, a: torch.Tensor, r: torch.Tensor,
@@ -239,11 +248,11 @@ class WorldModel(nn.Module):
 
         def KL(dist1, dist2):
             KL_ = torch.distributions.kl_divergence
-            kl_lhs = KL_(td.OneHotCategoricalStraightThrough(logits=dist2.detach()),
-                         td.OneHotCategoricalStraightThrough(logits=dist1)).mean()
+            kl_lhs = KL_(td.Independent(td.OneHotCategoricalStraightThrough(logits=dist2.detach()), 1),
+                         td.Independent(td.OneHotCategoricalStraightThrough(logits=dist1), 1)).mean()
             kl_rhs = KL_(
-                td.OneHotCategoricalStraightThrough(logits=dist2),
-                td.OneHotCategoricalStraightThrough(logits=dist1.detach())).mean()
+                td.Independent(td.OneHotCategoricalStraightThrough(logits=dist2), 1),
+                td.Independent(td.OneHotCategoricalStraightThrough(logits=dist1.detach()), 1)).mean()
             kl_lhs = torch.maximum(kl_lhs, self.kl_free_nats)
             kl_rhs = torch.maximum(kl_rhs, self.kl_free_nats)
             return ((self.alpha * kl_lhs + (1 - self.alpha) * kl_rhs))
@@ -255,11 +264,10 @@ class WorldModel(nn.Module):
             d_features = additional['d_features']
 
         prev_state, prev_slots = self.get_initial_state(b // self.cluster_size)
-        if self.use_prev_slots:
-            prev_slots = self.slot_attention.generate_initial(b // self.cluster_size).repeat(self.cluster_size, 1, 1, 1).transpose(0, 1)
-            slots_c = self.slot_attention(pre_slot_features_c.flatten(0, 1), prev_slots.flatten(0, 1)).reshape(b // self.cluster_size, self.cluster_size, self.slots_num, -1).transpose(0, 1)
-        else:
-            slots_c = self.slot_attention(pre_slot_features_c.flatten(0, 1)).reshape(b, seq_num, self.slots_num, -1).transpose(0, 1)
+        slot_pos_enc = self.slot_emb(self.slot_indexer).unsqueeze(0)
+        prev_slots = (self.slot_attention.generate_initial(b // self.cluster_size) + slot_pos_enc).repeat(self.cluster_size, 1, 1, 1).transpose(0, 1)
+        slots_c = self.slot_attention(pre_slot_features_c.flatten(0, 1), prev_slots.flatten(0, 1)).reshape(b // self.cluster_size, self.cluster_size, self.slots_num, -1)
+        slots_c = slots_c + slot_pos_enc.unsqueeze(0)
 
         for t in range(self.cluster_size):
             # s_t <- 1xB^xHxWx3

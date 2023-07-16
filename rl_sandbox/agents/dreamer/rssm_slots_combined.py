@@ -13,14 +13,31 @@ class State:
     determ: Float[torch.Tensor, 'seq batch num_slots determ']
     stoch_logits: Float[torch.Tensor, 'seq batch num_slots latent_classes latent_dim']
     stoch_: t.Optional[Bool[torch.Tensor, 'seq batch num_slots stoch_dim']] = None
+    pos_enc: t.Optional[Float[torch.Tensor, '1 1 num_slots stoch_dim+determ']] = None
+
+    def flatten(self):
+        return State(self.determ.flatten(0, 1).unsqueeze(0),
+                     self.stoch_logits.flatten(0, 1).unsqueeze(0),
+                     self.stoch_.flatten(0, 1).unsqueeze(0) if self.stoch_ is not None else None,
+                     self.pos_enc.detach() if self.pos_enc is not None else None)
+
+    def detach(self):
+        return State(self.determ.detach(),
+                     self.stoch_logits.detach(),
+                     self.stoch_.detach() if self.stoch_ is not None else None,
+                     self.pos_enc.detach() if self.pos_enc is not None else None)
 
     @property
     def combined(self):
-        return torch.concat([self.determ, self.stoch], dim=-1).flatten(2, 3)
+        return self.combined_slots.flatten(2, 3)
 
     @property
     def combined_slots(self):
-        return torch.concat([self.determ, self.stoch], dim=-1)
+        state = torch.concat([self.determ, self.stoch], dim=-1)
+        if self.pos_enc is not None:
+            return state + self.pos_enc
+        else:
+            return state
 
     @property
     def stoch(self):
@@ -40,7 +57,9 @@ class State:
         else:
             stochs = None
         return State(torch.cat([state.determ for state in states], dim=dim),
-                     torch.cat([state.stoch_logits for state in states], dim=dim), stochs)
+                     torch.cat([state.stoch_logits for state in states], dim=dim),
+                     stochs,
+                     states[0].pos_enc)
 
 
 class GRUCell(nn.Module):
@@ -164,7 +183,7 @@ class RSSM(nn.Module):
     def predict_next(self, prev_state: State, action) -> State:
         x = self.pre_determ_recurrent(
             torch.concat([
-                prev_state.stoch,
+                prev_state.stoch + prev_state.pos_enc[:, :, :, -prev_state.stoch.shape[-1]:],
                 action.unsqueeze(2).repeat((1, 1, prev_state.determ.shape[2], 1))
             ],
                          dim=-1))
@@ -178,16 +197,17 @@ class RSSM(nn.Module):
 
         # used for KL divergence
         # TODO: Test both options (with slot in batch size and in feature dim)
-        predicted_stoch_logits = self.estimate_stochastic_latent(x.reshape(prev_state.determ.shape))
+        predicted_stoch_logits = self.estimate_stochastic_latent(x.reshape(prev_state.determ.shape) + prev_state.pos_enc[:, :, :, :-prev_state.stoch.shape[-1]])
         # Size is 1 x B x slots_num x ...
         return State(determ_post.reshape(prev_state.determ.shape),
-                     predicted_stoch_logits.reshape(prev_state.stoch_logits.shape)), diff
+                     predicted_stoch_logits.reshape(prev_state.stoch_logits.shape),
+                     pos_enc=prev_state.pos_enc), diff
 
     def update_current(self, prior: State, embed) -> State:  # Dreamer 'obs_out'
         return State(
             prior.determ,
             self.stoch_net(torch.concat([prior.determ, embed], dim=-1)).flatten(
-                1, 2).reshape(prior.stoch_logits.shape))
+                1, 2).reshape(prior.stoch_logits.shape), pos_enc=prior.pos_enc)
 
     def forward(self, h_prev: State, embed, action) -> tuple[State, State]:
         """

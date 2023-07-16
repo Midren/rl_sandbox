@@ -21,12 +21,12 @@ class SlotAttention(nn.Module):
         self.epsilon = 1e-8
 
         self.use_prev_slots = use_prev_slots
-        if use_prev_slots:
-            self.slots_mu = nn.Parameter(torch.randn(1, 1, self.n_dim))
-            self.slots_logsigma = nn.Parameter(torch.zeros(1, 1, self.n_dim))
-        else:
-            self.slots_mu = nn.Parameter(torch.randn(1, num_slots, self.n_dim))
-            self.slots_logsigma = nn.Parameter(torch.zeros(1, num_slots, self.n_dim))
+        # if use_prev_slots:
+        self.slots_mu = nn.Parameter(torch.randn(1, 1, self.n_dim))
+        self.slots_logsigma = nn.Parameter(torch.zeros(1, 1, self.n_dim))
+        # else:
+        #     self.slots_mu = nn.Parameter(torch.randn(1, num_slots, self.n_dim))
+        #     self.slots_logsigma = nn.Parameter(torch.zeros(1, num_slots, self.n_dim))
         nn.init.xavier_uniform_(self.slots_logsigma)
 
         self.slots_proj = nn.Linear(n_dim, n_dim)

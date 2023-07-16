@@ -14,6 +14,17 @@ class State:
     stoch_logits: Float[torch.Tensor, 'seq batch num_slots latent_classes latent_dim']
     stoch_: t.Optional[Bool[torch.Tensor, 'seq batch num_slots stoch_dim']] = None
 
+    def flatten(self):
+        return State(self.determ.flatten(0, 1).unsqueeze(0),
+                     self.stoch_logits.flatten(0, 1).unsqueeze(0),
+                     self.stoch_.flatten(0, 1).unsqueeze(0) if self.stoch_ is not None else None)
+
+
+    def detach(self):
+        return State(self.determ.detach(),
+                     self.stoch_logits.detach(),
+                     self.stoch_.detach() if self.stoch_ is not None else None)
+
     @property
     def combined(self):
         return torch.concat([self.determ, self.stoch], dim=-1).flatten(2, 3)

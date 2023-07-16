@@ -21,7 +21,7 @@ agent:
     kl_free_nats: 1.0
 
 logger:
-  message: Combined, without dino, fixed KL, 1 nat, no prev slot
+  message: Combined, without dino, added pos encoding
   log_grads: false
 
 training:

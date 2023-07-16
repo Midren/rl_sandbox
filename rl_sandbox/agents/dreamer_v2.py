@@ -178,9 +178,7 @@ class DreamerV2(RlAgent):
         metrics_wm |= self.world_model_optimizer.step(losses_wm['loss_wm'])
 
         with torch.cuda.amp.autocast(enabled=self.is_f16):
-            initial_states = discovered_states.__class__(discovered_states.determ.flatten(0, 1).unsqueeze(0).detach(),
-                                   discovered_states.stoch_logits.flatten(0, 1).unsqueeze(0).detach(),
-                                   discovered_states.stoch_.flatten(0, 1).unsqueeze(0).detach())
+            initial_states = discovered_states.flatten().detach()
 
             states, actions, rewards, discount_factors = self.imagine_trajectory(initial_states)
             zs = states.combined
