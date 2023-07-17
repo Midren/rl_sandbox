@@ -21,7 +21,7 @@ agent:
     kl_free_nats: 1.0
 
 logger:
-  message: Combined, without dino, added pos encoding
+  message: Combined, without dino, added pos encoding for reconstruction
   log_grads: false
 
 training:

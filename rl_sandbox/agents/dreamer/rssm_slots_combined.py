@@ -183,7 +183,7 @@ class RSSM(nn.Module):
     def predict_next(self, prev_state: State, action) -> State:
         x = self.pre_determ_recurrent(
             torch.concat([
-                prev_state.stoch + prev_state.pos_enc[:, :, :, -prev_state.stoch.shape[-1]:],
+                prev_state.stoch,
                 action.unsqueeze(2).repeat((1, 1, prev_state.determ.shape[2], 1))
             ],
                          dim=-1))
@@ -197,7 +197,7 @@ class RSSM(nn.Module):
 
         # used for KL divergence
         # TODO: Test both options (with slot in batch size and in feature dim)
-        predicted_stoch_logits = self.estimate_stochastic_latent(x.reshape(prev_state.determ.shape) + prev_state.pos_enc[:, :, :, :-prev_state.stoch.shape[-1]])
+        predicted_stoch_logits = self.estimate_stochastic_latent(x.reshape(prev_state.determ.shape))
         # Size is 1 x B x slots_num x ...
         return State(determ_post.reshape(prev_state.determ.shape),
                      predicted_stoch_logits.reshape(prev_state.stoch_logits.shape),

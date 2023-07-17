@@ -98,8 +98,18 @@ class WorldModel(nn.Module):
                                    flatten_output=False)
 
         self.slot_attention = SlotAttention(slots_num, self.n_dim, slots_iter_num, use_prev_slots)
-        self.state_emb = nn.Embedding(slots_num, self.state_size // slots_num)
-        self.slot_emb = nn.Embedding(slots_num, self.n_dim)
+        def getPositionEncoding(seq_len, d, n=10000):
+            import numpy as np
+            P = np.zeros((seq_len, d))
+            for k in range(seq_len):
+                for i in np.arange(int(d/2)):
+                    denominator = np.power(n, 2*i/d)
+                    P[k, 2*i] = np.sin(k/denominator)
+                    P[k, 2*i+1] = np.cos(k/denominator)
+            return P
+        self.register_buffer('pos_enc', torch.from_numpy(getPositionEncoding(self.slots_num, self.state_size // slots_num)).to(dtype=torch.float32))
+        # self.state_emb = nn.Embedding(slots_num, self.state_size // slots_num)
+        # self.slot_emb = nn.Embedding(slots_num, self.n_dim)
         if self.encode_vit:
             self.positional_augmenter_inp = PositionalEmbedding(self.n_dim, (4, 4))
         else:
@@ -187,7 +197,8 @@ class WorldModel(nn.Module):
                         self.slots_num,
                         self.latent_classes * self.latent_dim,
                         device=device),
-            self.state_emb(self.slot_indexer).unsqueeze(0).unsqueeze(0)), None
+            self.pos_enc.unsqueeze(0).unsqueeze(0)), None
+            # self.state_emb(self.slot_indexer).unsqueeze(0).unsqueeze(0)), None
 
     def predict_next(self, prev_state: State, action):
         prior, _ = self.recurrent_model.predict_next(prev_state, action)
@@ -263,10 +274,11 @@ class WorldModel(nn.Module):
             d_features = additional['d_features']
 
         prev_state, prev_slots = self.get_initial_state(b // self.cluster_size)
-        slot_pos_enc = self.slot_emb(self.slot_indexer).unsqueeze(0)
-        prev_slots = (self.slot_attention.generate_initial(b // self.cluster_size) + slot_pos_enc).repeat(self.cluster_size, 1, 1, 1).transpose(0, 1)
+        # slot_pos_enc = self.slot_emb(self.slot_indexer).unsqueeze(0)
+        # prev_slots = (self.slot_attention.generate_initial(b // self.cluster_size) + slot_pos_enc).repeat(self.cluster_size, 1, 1, 1).transpose(0, 1)
+        prev_slots = (self.slot_attention.generate_initial(b // self.cluster_size)).repeat(self.cluster_size, 1, 1, 1).transpose(0, 1)
         slots_c = self.slot_attention(pre_slot_features_c.flatten(0, 1), prev_slots.flatten(0, 1)).reshape(b // self.cluster_size, self.cluster_size, self.slots_num, -1)
-        slots_c = slots_c + slot_pos_enc.unsqueeze(0)
+        # slots_c = slots_c + slot_pos_enc.unsqueeze(0)
 
         for t in range(self.cluster_size):
             # s_t <- 1xB^xHxWx3
