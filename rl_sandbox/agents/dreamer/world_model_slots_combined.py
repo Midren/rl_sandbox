@@ -6,7 +6,7 @@ import torchvision as tv
 from torch import nn
 from torch.nn import functional as F
 
-from rl_sandbox.agents.dreamer import Dist, Normalizer, View
+from rl_sandbox.agents.dreamer import Dist, Normalizer, View, get_position_encoding
 from rl_sandbox.agents.dreamer.rssm_slots_combined import RSSM, State
 from rl_sandbox.agents.dreamer.vision import Decoder, Encoder
 from rl_sandbox.utils.dists import DistLayer
@@ -98,18 +98,7 @@ class WorldModel(nn.Module):
                                    flatten_output=False)
 
         self.slot_attention = SlotAttention(slots_num, self.n_dim, slots_iter_num, use_prev_slots)
-        def getPositionEncoding(seq_len, d, n=10000):
-            import numpy as np
-            P = np.zeros((seq_len, d))
-            for k in range(seq_len):
-                for i in np.arange(int(d/2)):
-                    denominator = np.power(n, 2*i/d)
-                    P[k, 2*i] = np.sin(k/denominator)
-                    P[k, 2*i+1] = np.cos(k/denominator)
-            return P
-        self.register_buffer('pos_enc', torch.from_numpy(getPositionEncoding(self.slots_num, self.state_size // slots_num)).to(dtype=torch.float32))
-        # self.state_emb = nn.Embedding(slots_num, self.state_size // slots_num)
-        # self.slot_emb = nn.Embedding(slots_num, self.n_dim)
+        self.register_buffer('pos_enc', torch.from_numpy(get_position_encoding(self.slots_num, self.state_size // slots_num)).to(dtype=torch.float32))
         if self.encode_vit:
             self.positional_augmenter_inp = PositionalEmbedding(self.n_dim, (4, 4))
         else:
@@ -148,10 +137,6 @@ class WorldModel(nn.Module):
                                                   layer_norm=layer_norm,
                                                   final_activation=DistLayer('binary'))
         self.reward_normalizer = Normalizer(momentum=1.00, scale=1.0, eps=1e-8)
-        self.register_buffer('slot_indexer',  torch.linspace(0,
-                                          self.slots_num-1,
-                                          self.slots_num,
-                                          dtype=torch.long))
 
     def slot_mask(self, masks: torch.Tensor) -> torch.Tensor:
         match self.mask_combination:
@@ -198,7 +183,6 @@ class WorldModel(nn.Module):
                         self.latent_classes * self.latent_dim,
                         device=device),
             self.pos_enc.unsqueeze(0).unsqueeze(0)), None
-            # self.state_emb(self.slot_indexer).unsqueeze(0).unsqueeze(0)), None
 
     def predict_next(self, prev_state: State, action):
         prior, _ = self.recurrent_model.predict_next(prev_state, action)
@@ -208,7 +192,6 @@ class WorldModel(nn.Module):
             discount_factors = self.discount_predictor(prior.combined).sample()
         else:
             discount_factors = torch.ones_like(reward)
-
         return prior, reward, discount_factors
 
     def get_latent(self, obs: torch.Tensor, action, state: t.Optional[tuple[State, torch.Tensor]]) -> t.Tuple[State, torch.Tensor]:
@@ -229,7 +212,6 @@ class WorldModel(nn.Module):
 
         _, posterior, _ = self.recurrent_model.forward(state, slots_t.unsqueeze(0),
                                                        action)
-
         return posterior, slots_t
 
     def calculate_loss(self, obs: torch.Tensor, a: torch.Tensor, r: torch.Tensor,

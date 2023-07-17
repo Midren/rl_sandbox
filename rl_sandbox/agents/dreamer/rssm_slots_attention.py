@@ -15,25 +15,32 @@ class State:
     determ: Float[torch.Tensor, 'seq batch num_slots determ']
     stoch_logits: Float[torch.Tensor, 'seq batch num_slots latent_classes latent_dim']
     stoch_: t.Optional[Bool[torch.Tensor, 'seq batch num_slots stoch_dim']] = None
+    pos_enc: t.Optional[Float[torch.Tensor, '1 1 num_slots stoch_dim+determ']] = None
+    determ_updated: t.Optional[Float[torch.Tensor, 'seq batch num_slots determ']] = None
 
     def flatten(self):
         return State(self.determ.flatten(0, 1).unsqueeze(0),
                      self.stoch_logits.flatten(0, 1).unsqueeze(0),
-                     self.stoch_.flatten(0, 1).unsqueeze(0) if self.stoch_ is not None else None)
-
+                     self.stoch_.flatten(0, 1).unsqueeze(0) if self.stoch_ is not None else None,
+                     self.pos_enc.detach() if self.pos_enc is not None else None)
 
     def detach(self):
         return State(self.determ.detach(),
                      self.stoch_logits.detach(),
-                     self.stoch_.detach() if self.stoch_ is not None else None)
+                     self.stoch_.detach() if self.stoch_ is not None else None,
+                     self.pos_enc.detach() if self.pos_enc is not None else None)
 
     @property
     def combined(self):
-        return torch.concat([self.determ, self.stoch], dim=-1).flatten(2, 3)
+        return self.combined_slots.flatten(2, 3)
 
     @property
     def combined_slots(self):
-        return torch.concat([self.determ, self.stoch], dim=-1)
+        state = torch.concat([self.determ, self.stoch], dim=-1)
+        if self.pos_enc is not None:
+            return state + self.pos_enc
+        else:
+            return state
 
     @property
     def stoch(self):
@@ -53,7 +60,9 @@ class State:
         else:
             stochs = None
         return State(torch.cat([state.determ for state in states], dim=dim),
-                     torch.cat([state.stoch_logits for state in states], dim=dim), stochs)
+                     torch.cat([state.stoch_logits for state in states], dim=dim),
+                     stochs,
+                     states[0].pos_enc)
 
 
 class RSSM(nn.Module):
@@ -169,7 +178,7 @@ class RSSM(nn.Module):
         if self.discrete_rssm:
             raise NotImplementedError("discrete rssm was not adopted for slot attention")
         else:
-            determ_post, diff = determ_prior, 0
+            determ_post, diff = determ_prior.clone(), 0
 
         determ_post = determ_post.reshape(prev_state.determ.shape)
 
@@ -177,7 +186,7 @@ class RSSM(nn.Module):
         # Experiment, when only stochastic part is affected and deterministic is not touched
         # We keep flow of gradients through determ block, but updating it with stochastic part
         for _ in range(self.attention_block_num):
-            q, k, v = self.hidden_attention_proj(self.pre_norm(determ_post)).chunk(3, dim=-1) #
+            q, k, v = self.hidden_attention_proj(self.pre_norm(determ_post)).chunk(3, dim=-1)
             if self.symmetric_qk:
                 k = q
             qk = torch.einsum('lbih,lbjh->lbij', q, k)
@@ -188,7 +197,7 @@ class RSSM(nn.Module):
             coeff = self.attention_scheduler.val
             attn = coeff * attn + (1 - coeff) * torch.eye(q.shape[-2],device=q.device)
 
-            updates = torch.einsum('lbij,lbjh->lbih', qk, v)
+            updates = torch.einsum('lbij,lbjh->lbih', attn, v)
             determ_post = determ_post + self.fc(self.fc_norm(updates))
 
         self.last_attention = attn.mean(dim=1).squeeze()
@@ -196,14 +205,14 @@ class RSSM(nn.Module):
         # used for KL divergence
         predicted_stoch_logits = self.estimate_stochastic_latent(determ_post.reshape(determ_prior.shape)).reshape(prev_state.stoch_logits.shape)
         # Size is 1 x B x slots_num x ...
-        return State(determ_post,
-                     predicted_stoch_logits), diff
+        return State(determ_prior.reshape(prev_state.determ.shape),
+                     predicted_stoch_logits, pos_enc=prev_state.pos_enc, determ_updated=determ_post), diff
 
     def update_current(self, prior: State, embed) -> State:  # Dreamer 'obs_out'
         return State(
-            prior.determ,
+            prior.determ_updated,
             self.stoch_net(torch.concat([prior.determ, embed], dim=-1)).flatten(
-                1, 2).reshape(prior.stoch_logits.shape))
+                1, 2).reshape(prior.stoch_logits.shape), pos_enc=prior.pos_enc)
 
     def forward(self, h_prev: State, embed, action) -> tuple[State, State]:
         """

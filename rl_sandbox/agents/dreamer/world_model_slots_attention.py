@@ -6,7 +6,7 @@ import torchvision as tv
 from torch import nn
 from torch.nn import functional as F
 
-from rl_sandbox.agents.dreamer import Dist, Normalizer, View
+from rl_sandbox.agents.dreamer import Dist, Normalizer, View, get_position_encoding
 from rl_sandbox.agents.dreamer.rssm_slots_attention import RSSM, State
 from rl_sandbox.agents.dreamer.vision import Decoder, Encoder
 from rl_sandbox.utils.dists import DistLayer
@@ -103,6 +103,7 @@ class WorldModel(nn.Module):
                                    flatten_output=False)
 
         self.slot_attention = SlotAttention(slots_num, self.n_dim, slots_iter_num, use_prev_slots)
+        self.register_buffer('pos_enc', torch.from_numpy(get_position_encoding(self.slots_num, self.state_size // slots_num)).to(dtype=torch.float32))
         if self.encode_vit:
             self.positional_augmenter_inp = PositionalEmbedding(self.n_dim, (4, 4))
         else:
@@ -185,7 +186,8 @@ class WorldModel(nn.Module):
                         batch_size,
                         self.slots_num,
                         self.latent_classes * self.latent_dim,
-                        device=device)), None
+                        device=device),
+            self.pos_enc.unsqueeze(0).unsqueeze(0)), None
 
     def predict_next(self, prev_state: State, action):
         prior, _ = self.recurrent_model.predict_next(prev_state, action)
@@ -262,7 +264,7 @@ class WorldModel(nn.Module):
 
         self.last_attn = torch.zeros((self.slots_num, self.slots_num), device=a_c.device)
 
-        prev_slots = self.slot_attention.generate_initial(b // self.cluster_size).repeat(self.cluster_size, 1, 1, 1).transpose(0, 1)
+        prev_slots = (self.slot_attention.generate_initial(b // self.cluster_size)).repeat(self.cluster_size, 1, 1, 1).transpose(0, 1)
         slots_c = self.slot_attention(pre_slot_features_c.flatten(0, 1), prev_slots.flatten(0, 1)).reshape(b // self.cluster_size, self.cluster_size, self.slots_num, -1)
 
         for t in range(self.cluster_size):

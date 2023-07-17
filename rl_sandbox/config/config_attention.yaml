@@ -7,7 +7,7 @@ defaults:
   - override hydra/launcher: joblib
 
 seed: 42
-device_type: cuda:0
+device_type: cuda:1
 
 agent:
   world_model:
@@ -21,7 +21,7 @@ agent:
     kl_free_nats: 1.0
 
 logger:
-  message: Attention, without dino, fixed KL, 1 nat, no prev slot
+  message: Attention, without dino, Fixed attn, pos enc, determ_updated
   log_grads: false
 
 training:
