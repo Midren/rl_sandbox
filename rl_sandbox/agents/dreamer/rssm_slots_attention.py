@@ -22,7 +22,7 @@ class State:
         return State(self.determ.flatten(0, 1).unsqueeze(0),
                      self.stoch_logits.flatten(0, 1).unsqueeze(0),
                      self.stoch_.flatten(0, 1).unsqueeze(0) if self.stoch_ is not None else None,
-                     self.pos_enc.detach() if self.pos_enc is not None else None)
+                     self.pos_enc if self.pos_enc is not None else None)
 
     def detach(self):
         return State(self.determ.detach(),
@@ -178,7 +178,7 @@ class RSSM(nn.Module):
         if self.discrete_rssm:
             raise NotImplementedError("discrete rssm was not adopted for slot attention")
         else:
-            determ_post, diff = determ_prior.clone(), 0
+            determ_post, diff = determ_prior, 0
 
         determ_post = determ_post.reshape(prev_state.determ.shape)
 
@@ -210,8 +210,8 @@ class RSSM(nn.Module):
 
     def update_current(self, prior: State, embed) -> State:  # Dreamer 'obs_out'
         return State(
-            prior.determ_updated,
-            self.stoch_net(torch.concat([prior.determ, embed], dim=-1)).flatten(
+            prior.determ,
+            self.stoch_net(torch.concat([prior.determ_updated, embed], dim=-1)).flatten(
                 1, 2).reshape(prior.stoch_logits.shape), pos_enc=prior.pos_enc)
 
     def forward(self, h_prev: State, embed, action) -> tuple[State, State]:

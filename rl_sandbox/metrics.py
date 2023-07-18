@@ -20,7 +20,7 @@ class EpisodeMetricsEvaluator():
         pass
 
     def on_episode(self, logger):
-        pass
+        self.episode += 1
 
     def on_val(self, logger, rollouts: list[Rollout], global_step: int):
         metrics = self.calculate_metrics(rollouts)
@@ -28,7 +28,6 @@ class EpisodeMetricsEvaluator():
         if self.log_video:
             video = rollouts[0].obs.unsqueeze(0)
             logger.add_video('val/visualization', self.agent.unprocess_obs(video), global_step)
-        self.episode += 1
 
     def calculate_metrics(self, rollouts: list[Rollout]):
         return {
@@ -68,6 +67,7 @@ class DreamerMetricsEvaluator():
     def on_episode(self, logger):
         latent_hist = (self._latent_probs / self.stored_steps).detach().cpu().numpy()
         self.latent_hist = ((latent_hist / latent_hist.max() * 255.0 )).astype(np.uint8)
+        self.action_hist = (self.agent._action_probs / self.stored_steps).detach().cpu().numpy()
 
         self.reset_ep()
         self.episode += 1
@@ -80,16 +80,15 @@ class DreamerMetricsEvaluator():
 
         # if discrete action space
         if self.agent.is_discrete:
-            action_hist = (self.agent._action_probs / self.stored_steps).detach().cpu().numpy()
             fig = plt.Figure()
             ax = fig.add_axes([0, 0, 1, 1])
-            ax.bar(np.arange(self.agent.actions_num), action_hist)
+            ax.bar(np.arange(self.agent.actions_num), self.action_hist)
             logger.add_figure('val/action_probs', fig, self.episode)
         else:
             # log mean +- std
             pass
-        logger.add_image('val/latent_probs', self.latent_hist, global_step, dataformats='HW')
-        logger.add_image('val/latent_probs_sorted', np.sort(self.latent_hist, axis=1), global_step, dataformats='HW')
+        logger.add_image('val/latent_probs', np.expand_dims(self.latent_hist, 0), global_step, dataformats='HW')
+        logger.add_image('val/latent_probs_sorted', np.expand_dims(np.sort(self.latent_hist, axis=1), 0), global_step, dataformats='HW')
 
     def _generate_video(self, obs: list[Observation], actions: list[Action], update_num: int):
         # obs = self.agent.preprocess_obs(obs)
@@ -174,13 +173,13 @@ class SlottedDreamerMetricsEvaluator(DreamerMetricsEvaluator):
         wm = self.agent.world_model
 
         if hasattr(wm.recurrent_model, 'last_attention'):
-            logger.add_image('val/mixer_attention', wm.recurrent_model.last_attention, self.episode, dataformats='HW')
+            logger.add_image('val/mixer_attention', wm.recurrent_model.last_attention.unsqueeze(0), global_step, dataformats='HW')
 
-        logger.add_image('val/slot_attention_mu', self.mu_hist/self.mu_hist.max(), self.episode, dataformats='HW')
-        logger.add_image('val/slot_attention_sigma', self.sigma_hist/self.sigma_hist.max(), self.episode, dataformats='HW')
+        logger.add_image('val/slot_attention_mu', (self.mu_hist/self.mu_hist.max()).unsqueeze(0), global_step, dataformats='HW')
+        logger.add_image('val/slot_attention_sigma', (self.sigma_hist/self.sigma_hist.max()).unsqueeze(0), global_step, dataformats='HW')
 
-        logger.add_scalar('val/slot_attention_mu_diff_max', self.mu_hist.max(), self.episode)
-        logger.add_scalar('val/slot_attention_sigma_diff_max', self.sigma_hist.max(), self.episode)
+        logger.add_scalar('val/slot_attention_mu_diff_max', self.mu_hist.max(), global_step)
+        logger.add_scalar('val/slot_attention_sigma_diff_max', self.sigma_hist.max(), global_step)
 
     def _generate_video(self, obs: list[Observation], actions: list[Action], update_num: int):
         # obs = torch.from_numpy(obs.copy()).to(self.agent.device)

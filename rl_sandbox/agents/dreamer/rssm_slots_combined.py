@@ -19,7 +19,7 @@ class State:
         return State(self.determ.flatten(0, 1).unsqueeze(0),
                      self.stoch_logits.flatten(0, 1).unsqueeze(0),
                      self.stoch_.flatten(0, 1).unsqueeze(0) if self.stoch_ is not None else None,
-                     self.pos_enc.detach() if self.pos_enc is not None else None)
+                     self.pos_enc if self.pos_enc is not None else None)
 
     def detach(self):
         return State(self.determ.detach(),

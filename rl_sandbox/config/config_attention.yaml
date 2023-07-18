@@ -21,7 +21,7 @@ agent:
     kl_free_nats: 1.0
 
 logger:
-  message: Attention, without dino, Fixed attn, pos enc, determ_updated
+  message: Attention, without dino, 3 attn layer num, remove clone, fix updated
   log_grads: false
 
 training:

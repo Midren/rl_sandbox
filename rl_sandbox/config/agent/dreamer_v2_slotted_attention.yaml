@@ -17,4 +17,4 @@ world_model:
 
   full_qk_from: 4e4
   symmetric_qk: true
-  attention_block_num: 1
+  attention_block_num: 3
