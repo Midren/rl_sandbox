@@ -259,7 +259,7 @@ class SlottedDreamerMetricsEvaluator(DreamerMetricsEvaluator):
         logger.add_scalar(f'val/reward', real_rewards[0].sum(), epoch_num)
 
 class SlottedDinoDreamerMetricsEvaluator(SlottedDreamerMetricsEvaluator):
-    def _generate_video(self, obs: list[Observation], actions: list[Action], update_num: int):
+    def _generate_video(self, obs: list[Observation], actions: list[Action], d_feats: list[torch.Tensor], update_num: int):
         # obs = torch.from_numpy(obs.copy()).to(self.agent.device)
         # obs = self.agent.preprocess_obs(obs)
         # actions = self.agent.from_np(actions)
@@ -268,13 +268,15 @@ class SlottedDinoDreamerMetricsEvaluator(SlottedDreamerMetricsEvaluator):
         video = []
         slots_video = []
         vit_slots_video = []
+        vit_mean_err_video = []
+        vit_max_err_video = []
         rews = []
 
         vit_size = self.agent.world_model.vit_size
 
         state = None
         prev_slots = None
-        for idx, (o, a) in enumerate(list(zip(obs, actions))):
+        for idx, (o, a, d_feat) in enumerate(list(zip(obs, actions, d_feats))):
             if idx > update_num:
                 break
             state, prev_slots = self.agent.world_model.get_latent(o, a.unsqueeze(0).unsqueeze(0), (state, prev_slots))
@@ -286,8 +288,9 @@ class SlottedDinoDreamerMetricsEvaluator(SlottedDreamerMetricsEvaluator):
             decoded_imgs = decoded_imgs * img_mask
             video_r = torch.sum(decoded_imgs, dim=1)
 
-            _, vit_masks = self.agent.world_model.dino_predictor(state.combined_slots.flatten(0, 1)).reshape(-1, self.agent.world_model.slots_num, self.agent.world_model.vit_feat_dim+1, vit_size, vit_size).split([self.agent.world_model.vit_feat_dim, 1], dim=2)
+            decoded_dino_feats, vit_masks = self.agent.world_model.dino_predictor(state.combined_slots.flatten(0, 1)).reshape(-1, self.agent.world_model.slots_num, self.agent.world_model.vit_feat_dim+1, vit_size, vit_size).split([self.agent.world_model.vit_feat_dim, 1], dim=2)
             vit_mask = F.softmax(vit_masks, dim=1)
+            decoded_dino = (decoded_dino_feats * vit_mask).sum(dim=1)
             upscale = tv.transforms.Resize(64, antialias=True)
 
             upscaled_mask = upscale(vit_mask.permute(0, 1, 4, 2, 3).squeeze())
@@ -297,6 +300,8 @@ class SlottedDinoDreamerMetricsEvaluator(SlottedDreamerMetricsEvaluator):
             video.append(self.agent.unprocess_obs(video_r))
             slots_video.append(self.agent.unprocess_obs(decoded_imgs))
             vit_slots_video.append(self.agent.unprocess_obs(per_slot_vit/upscaled_mask.max()))
+            vit_mean_err_video.append(((d_feat.reshape(decoded_dino.shape) - decoded_dino)**2).mean(dim=1))
+            vit_max_err_video.append(((d_feat.reshape(decoded_dino.shape) - decoded_dino)**2).max(dim=1).values)
 
         rews = torch.Tensor(rews).to(obs.device)
 
@@ -304,24 +309,26 @@ class SlottedDinoDreamerMetricsEvaluator(SlottedDreamerMetricsEvaluator):
             states, _, rews_2, _ = self.agent.imagine_trajectory(state, actions[update_num+1:].unsqueeze(1), horizon=self.agent.imagination_horizon - 1 - update_num)
             rews = torch.cat([rews, rews_2[1:].squeeze()])
 
-            # video_r = self.agent.world_model.image_predictor(states.combined_slots[1:]).mode
             decoded_imgs, masks = self.agent.world_model.image_predictor(states.combined_slots[1:].flatten(0, 1)).reshape(-1, self.agent.world_model.slots_num, 4, 64, 64).split([3, 1], dim=2)
             img_mask = self.agent.world_model.slot_mask(masks)
             decoded_imgs = decoded_imgs * img_mask
             video_r = torch.sum(decoded_imgs, dim=1)
 
-            _, vit_masks = self.agent.world_model.dino_predictor(states.combined_slots[1:].flatten(0, 1)).reshape(-1, self.agent.world_model.slots_num, self.agent.world_model.vit_feat_dim+1, vit_size, vit_size).split([self.agent.world_model.vit_feat_dim, 1], dim=2)
+            decoded_dino_feats, vit_masks = self.agent.world_model.dino_predictor(states.combined_slots[1:].flatten(0, 1)).reshape(-1, self.agent.world_model.slots_num, self.agent.world_model.vit_feat_dim+1, vit_size, vit_size).split([self.agent.world_model.vit_feat_dim, 1], dim=2)
             vit_mask = F.softmax(vit_masks, dim=1)
+            decoded_dino = (decoded_dino_feats * vit_mask).sum(dim=1)
+
             upscale = tv.transforms.Resize(64, antialias=True)
             upscaled_mask = upscale(vit_mask.permute(0, 1, 4, 2, 3).squeeze())
             per_slot_vit = (upscaled_mask.unsqueeze(2) * obs[update_num+1:].to(self.agent.device).unsqueeze(1))
-            # per_slot_vit = (upscaled_mask.unsqueeze(1) * o.to(self.agent.device).unsqueeze(0)).unsqueeze(0)
 
             video.append(self.agent.unprocess_obs(video_r))
             slots_video.append(self.agent.unprocess_obs(decoded_imgs))
             vit_slots_video.append(self.agent.unprocess_obs(per_slot_vit/torch.amax(upscaled_mask, dim=(1,2,3)).view(-1, 1, 1, 1, 1)))
+            vit_mean_err_video.append(((d_feats[update_num+1:].reshape(decoded_dino.shape) - decoded_dino)**2).mean(dim=1))
+            vit_max_err_video.append(((d_feats[update_num+1:].reshape(decoded_dino.shape) - decoded_dino)**2).max(dim=1).values)
 
-        return torch.cat(video), rews, torch.cat(slots_video), torch.cat(vit_slots_video)
+        return torch.cat(video), rews, torch.cat(slots_video), torch.cat(vit_slots_video), torch.cat(vit_mean_err_video).unsqueeze(0), torch.cat(vit_max_err_video).unsqueeze(0)
 
     def viz_log(self, rollout, logger, epoch_num):
         rollout = rollout.to(device=self.agent.device)
@@ -334,12 +341,17 @@ class SlottedDinoDreamerMetricsEvaluator(SlottedDreamerMetricsEvaluator):
 
         real_rewards = [rollout.rewards[idx:idx+ self.agent.imagination_horizon] for idx in init_indeces]
 
-        videos_r, imagined_rewards, slots_video, vit_masks_video = zip(*[self._generate_video(obs_0, a_0, update_num=self.agent.imagination_horizon//3) for obs_0, a_0 in zip(
+        videos_r, imagined_rewards, slots_video, vit_masks_video, vit_mean_err_video, vit_max_err_video = zip(*[self._generate_video(obs_0, a_0, d_feat_0, update_num=self.agent.imagination_horizon//3) for obs_0, a_0, d_feat_0 in zip(
                 [rollout.obs[idx:idx+ self.agent.imagination_horizon] for idx in init_indeces],
-                [rollout.actions[idx:idx+ self.agent.imagination_horizon] for idx in init_indeces])
+                [rollout.actions[idx:idx+ self.agent.imagination_horizon] for idx in init_indeces],
+                [rollout.additional_data['d_features'][idx:idx+ self.agent.imagination_horizon] for idx in init_indeces])
         ])
         videos_r = torch.cat(videos_r, dim=3)
 
+        vit_mean_err_video = torch.cat(vit_mean_err_video, dim=3)
+        vit_max_err_video = torch.cat(vit_max_err_video, dim=3)
+        vit_mean_err_video = (vit_mean_err_video/vit_mean_err_video.max() * 255.0).to(dtype=torch.uint8)
+        vit_max_err_video = (vit_max_err_video/vit_max_err_video.max() * 255.0).to(dtype=torch.uint8)
 
         videos_comparison = torch.cat([videos, videos_r, (torch.abs(videos.float() - videos_r.float() + 1)/2).to(dtype=torch.uint8)], dim=2).unsqueeze(0)
 
@@ -354,6 +366,8 @@ class SlottedDinoDreamerMetricsEvaluator(SlottedDreamerMetricsEvaluator):
         logger.add_video('val/dreamed_rollout', videos_comparison, epoch_num)
         logger.add_video('val/dreamed_slots', slots_video, epoch_num)
         logger.add_video('val/dreamed_vit_masks', vit_masks_video, epoch_num)
+        logger.add_video('val/dreamed_vit_masks', vit_mean_err_video.detach().cpu().unsqueeze(2).repeat(1, 1, 3, 1, 1), epoch_num)
+        logger.add_video('val/dreamed_vit_masks', vit_max_err_video.detach().cpu().unsqueeze(2).repeat(1, 1, 3, 1, 1), epoch_num)
 
         # FIXME: rewrite sum(...) as (...).sum()
         rewards_err = torch.Tensor([torch.abs(sum(imagined_rewards[i]) - real_rewards[i].sum()) for i in range(len(imagined_rewards))]).mean()

@@ -50,7 +50,7 @@ class WorldModel(nn.Module):
         self.vit_img_size = vit_img_size
         self.per_slot_rec_loss = per_slot_rec_loss
 
-        self.n_dim = 192
+        self.n_dim = 384
 
         self.recurrent_model = RSSM(
             latent_dim,
@@ -98,7 +98,7 @@ class WorldModel(nn.Module):
         else:
             self.encoder = Encoder(norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
                                    kernel_sizes=[4, 4, 4],
-                                   channel_step=48,
+                                   channel_step=48 * (self.n_dim // 192),
                                    double_conv=True,
                                    flatten_output=False)
 
