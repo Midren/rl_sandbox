@@ -153,6 +153,13 @@ class RSSM(nn.Module):
         self.att_scale = hidden_size**(-0.5)
         self.eps = 1e-8
 
+        self.hidden_attention_proj_obs = nn.Linear(embed_size, 2*embed_size)
+        self.hidden_attention_proj_obs_state = nn.Linear(hidden_size, embed_size)
+        self.pre_norm_obs = nn.LayerNorm(embed_size)
+
+        self.fc_obs = nn.Linear(embed_size, embed_size)
+        self.fc_norm_obs = nn.LayerNorm(embed_size)
+
     def on_train_step(self):
         self.attention_scheduler.step()
 
@@ -209,6 +216,19 @@ class RSSM(nn.Module):
                      predicted_stoch_logits, pos_enc=prev_state.pos_enc, determ_updated=determ_post), diff
 
     def update_current(self, prior: State, embed) -> State:  # Dreamer 'obs_out'
+        for _ in range(self.attention_block_num):
+            k = self.hidden_attention_proj_obs_state(self.pre_norm(prior.determ_updated))
+            q, v = self.hidden_attention_proj_obs(self.pre_norm_obs(embed)).chunk(2, dim=-1)
+            qk = torch.einsum('lbih,lbjh->lbij', q, k)
+
+            # TODO: Use Gumbel Softmax
+            attn = torch.softmax(self.att_scale * qk + self.eps, dim=-1)
+            attn = attn / attn.sum(dim=-1, keepdim=True)
+
+            updates = torch.einsum('lbij,lbjh->lbih', attn, v)
+            # TODO: Try just using updates instead of embed
+            embed = embed + self.fc_obs(self.fc_norm_obs(updates))
+
         return State(
             prior.determ,
             self.stoch_net(torch.concat([prior.determ_updated, embed], dim=-1)).flatten(
