@@ -21,7 +21,7 @@ agent:
     kl_free_nats: 1.0
 
 logger:
-  message: Attention, without dino, add attention for embed choosing
+  message: Attention, without dino, Attn X Embed with Identity attn decay
   log_grads: false
 
 training:

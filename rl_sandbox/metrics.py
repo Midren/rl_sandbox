@@ -174,6 +174,7 @@ class SlottedDreamerMetricsEvaluator(DreamerMetricsEvaluator):
 
         if hasattr(wm.recurrent_model, 'last_attention'):
             logger.add_image('val/mixer_attention', wm.recurrent_model.last_attention.unsqueeze(0), global_step, dataformats='HW')
+            logger.add_image('val/embed_attention', wm.recurrent_model.embed_attn.unsqueeze(0), global_step, dataformats='HW')
 
         logger.add_image('val/slot_attention_mu', (self.mu_hist/self.mu_hist.max()).unsqueeze(0), global_step, dataformats='HW')
         logger.add_image('val/slot_attention_sigma', (self.sigma_hist/self.sigma_hist.max()).unsqueeze(0), global_step, dataformats='HW')

@@ -153,7 +153,7 @@ class RSSM(nn.Module):
         self.att_scale = hidden_size**(-0.5)
         self.eps = 1e-8
 
-        self.hidden_attention_proj_obs = nn.Linear(embed_size, 2*embed_size)
+        self.hidden_attention_proj_obs = nn.Linear(embed_size, embed_size)
         self.hidden_attention_proj_obs_state = nn.Linear(hidden_size, embed_size)
         self.pre_norm_obs = nn.LayerNorm(embed_size)
 
@@ -216,18 +216,20 @@ class RSSM(nn.Module):
                      predicted_stoch_logits, pos_enc=prev_state.pos_enc, determ_updated=determ_post), diff
 
     def update_current(self, prior: State, embed) -> State:  # Dreamer 'obs_out'
-        for _ in range(self.attention_block_num):
-            k = self.hidden_attention_proj_obs_state(self.pre_norm(prior.determ_updated))
-            q, v = self.hidden_attention_proj_obs(self.pre_norm_obs(embed)).chunk(2, dim=-1)
-            qk = torch.einsum('lbih,lbjh->lbij', q, k)
+        k = self.hidden_attention_proj_obs_state(self.pre_norm(prior.determ_updated))
+        q = self.hidden_attention_proj_obs(self.pre_norm_obs(embed))
+        qk = torch.einsum('lbih,lbjh->lbij', q, k)
 
-            # TODO: Use Gumbel Softmax
-            attn = torch.softmax(self.att_scale * qk + self.eps, dim=-1)
-            attn = attn / attn.sum(dim=-1, keepdim=True)
+        # TODO: Use Gumbel Softmax
+        attn = torch.softmax(self.att_scale * qk + self.eps, dim=-1)
+        attn = attn / attn.sum(dim=-1, keepdim=True)
 
-            updates = torch.einsum('lbij,lbjh->lbih', attn, v)
-            # TODO: Try just using updates instead of embed
-            embed = embed + self.fc_obs(self.fc_norm_obs(updates))
+        # TODO: Maybe make this a learnable parameter ?
+        coeff = min((self.attention_scheduler.val * 5), 1.0)
+        attn = coeff * attn + (1 - coeff) * torch.eye(q.shape[-2],device=q.device)
+
+        embed = torch.einsum('lbij,lbjh->lbih', attn, embed)
+        self.embed_attn = attn.squeeze()
 
         return State(
             prior.determ,
