@@ -366,8 +366,8 @@ class SlottedDinoDreamerMetricsEvaluator(SlottedDreamerMetricsEvaluator):
         logger.add_video('val/dreamed_rollout', videos_comparison, epoch_num)
         logger.add_video('val/dreamed_slots', slots_video, epoch_num)
         logger.add_video('val/dreamed_vit_masks', vit_masks_video, epoch_num)
-        logger.add_video('val/dreamed_vit_masks', vit_mean_err_video.detach().cpu().unsqueeze(2).repeat(1, 1, 3, 1, 1), epoch_num)
-        logger.add_video('val/dreamed_vit_masks', vit_max_err_video.detach().cpu().unsqueeze(2).repeat(1, 1, 3, 1, 1), epoch_num)
+        logger.add_video('val/vit_mean_err', vit_mean_err_video.detach().cpu().unsqueeze(2).repeat(1, 1, 3, 1, 1), epoch_num)
+        logger.add_video('val/vit_max_err', vit_max_err_video.detach().cpu().unsqueeze(2).repeat(1, 1, 3, 1, 1), epoch_num)
 
         # FIXME: rewrite sum(...) as (...).sum()
         rewards_err = torch.Tensor([torch.abs(sum(imagined_rewards[i]) - real_rewards[i].sum()) for i in range(len(imagined_rewards))]).mean()
