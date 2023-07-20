@@ -16,5 +16,5 @@ world_model:
   vit_l2_ratio: 0.1
 
   full_qk_from: 4e4
-  symmetric_qk: true
+  symmetric_qk: false
   attention_block_num: 3

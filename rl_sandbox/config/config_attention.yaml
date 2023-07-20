@@ -17,11 +17,11 @@ agent:
     vit_l2_ratio: 1.0
     slots_iter_num: 3
     slots_num: 6
-    kl_loss_scale: 5.0
+    kl_loss_scale: 20.0
     kl_free_nats: 1.0
 
 logger:
-  message: Attention, only dino, determ_update, 384 slot n_dim, kl=5
+  message: Attention, only dino, kl=20, removed symmetric
   log_grads: false
 
 training:

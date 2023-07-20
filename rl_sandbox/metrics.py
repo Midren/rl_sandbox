@@ -19,8 +19,11 @@ class EpisodeMetricsEvaluator():
     def on_step(self, logger):
         pass
 
-    def on_episode(self, logger):
+    def on_episode(self, logger, rollout, global_step: int):
         self.episode += 1
+
+        metrics = self.calculate_metrics([rollout])
+        logger.log(metrics, global_step, mode='train')
 
     def on_val(self, logger, rollouts: list[Rollout], global_step: int):
         metrics = self.calculate_metrics(rollouts)
@@ -64,7 +67,7 @@ class DreamerMetricsEvaluator():
             self._action_probs += self._action_probs
         self._latent_probs += self.agent._state.stoch_dist.base_dist.probs.squeeze().mean(dim=0)
 
-    def on_episode(self, logger):
+    def on_episode(self, logger, rollout, global_step: int):
         latent_hist = (self._latent_probs / self.stored_steps).detach().cpu().numpy()
         self.latent_hist = ((latent_hist / latent_hist.max() * 255.0 )).astype(np.uint8)
         self.action_hist = (self.agent._action_probs / self.stored_steps).detach().cpu().numpy()
@@ -153,7 +156,7 @@ class SlottedDreamerMetricsEvaluator(DreamerMetricsEvaluator):
             self._action_probs += self._action_probs
         self._latent_probs += self.agent._state[0].stoch_dist.base_dist.probs.squeeze().mean(dim=0)
 
-    def on_episode(self, logger):
+    def on_episode(self, logger, rollout):
         wm = self.agent.world_model
 
         mu = wm.slot_attention.slots_mu

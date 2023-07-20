@@ -9,8 +9,16 @@ defaults:
 seed: 42
 device_type: cuda
 
+agent:
+  world_model:
+    decode_vit: true
+    vit_img_size: 224
+    vit_l2_ratio: 1.0
+    kl_loss_scale: 5.0
+    kl_free_nats: 1.0
+
 logger:
-  message: Crafter default
+  message: Dreamer with dino, kl=5
   log_grads: false
 
 training:
