@@ -139,7 +139,7 @@ def main(cfg: DictConfig):
             pbar.update(cfg.env.repeat_action_num)
 
         for metric in metrics:
-            metric.on_episode(logger)
+            metric.on_episode(logger, buff.rollouts[-1], global_step)
 
         # FIXME: find more appealing solution
         ### Validation

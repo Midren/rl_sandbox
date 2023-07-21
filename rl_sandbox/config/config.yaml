@@ -35,6 +35,8 @@ validation:
       _partial_: true
     - _target_: rl_sandbox.metrics.DreamerMetricsEvaluator
       _partial_: true
+    - _target_: rl_sandbox.crafter_metrics.CrafterMetricsEvaluator
+      _partial_: true
 
 debug:
   profiler: false

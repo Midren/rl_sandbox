@@ -156,7 +156,7 @@ class SlottedDreamerMetricsEvaluator(DreamerMetricsEvaluator):
             self._action_probs += self._action_probs
         self._latent_probs += self.agent._state[0].stoch_dist.base_dist.probs.squeeze().mean(dim=0)
 
-    def on_episode(self, logger, rollout):
+    def on_episode(self, logger, rollout, global_step: int):
         wm = self.agent.world_model
 
         mu = wm.slot_attention.slots_mu
@@ -165,7 +165,7 @@ class SlottedDreamerMetricsEvaluator(DreamerMetricsEvaluator):
         self.sigma_hist = torch.mean((sigma - sigma.squeeze(0).unsqueeze(1)) ** 2, dim=-1)
 
 
-        super().on_episode(logger)
+        super().on_episode(logger, rollout, global_step)
 
     def on_val(self, logger, rollouts: list[Rollout], global_step: int):
         super().on_val(logger, rollouts, global_step)
