@@ -6,7 +6,7 @@ clip_rewards: tanh
 layer_norm: true
 
 world_model:
-  rssm_dim: 1024
+  rssm_dim: 2048
   predict_discount: true
 
 actor:

@@ -13,9 +13,9 @@ world_model:
   latent_classes: 32
   rssm_dim: 200
   discount_loss_scale: 1.0
-  kl_loss_scale: 1e1
+  kl_loss_scale: 1
   kl_loss_balancing: 0.8
-  kl_free_nats: 0.00
+  kl_free_nats: 1.00
   discrete_rssm: false
   decode_vit: false
   vit_l2_ratio: 0.5

@@ -115,7 +115,6 @@ class ImaginativeActor(nn.Module):
         losses = {}
         metrics = {}
         action_dists = self.actor(zs.detach())
-        # baseline =
         advantage = (vs - baseline).detach()
         losses['loss_actor_reinforce'] = -(self.rho * action_dists.log_prob(
             actions.detach()).unsqueeze(2) * discount_factors * advantage).mean()
@@ -135,7 +134,7 @@ class ImaginativeActor(nn.Module):
             'loss_actor_dynamics_backprop'] + losses['loss_actor_entropy']
 
         # mean and std are estimated statistically as tanh transformation is used
-        sample = action_dists.rsample((128, ))
+        sample = action_dists.rsample((128,))
         act_avg = sample.mean(0)
         metrics['actor/avg_val'] = act_avg.mean()
         # metrics['actor/mode_val'] = action_dists.mode.mean()

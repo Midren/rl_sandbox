@@ -19,12 +19,14 @@ class Encoder(nn.Module):
             layers.append(nn.Conv2d(in_channels, out_channels, kernel_size=k, stride=2))
             layers.append(norm_layer(1, out_channels))
             layers.append(nn.ELU(inplace=True))
-            if double_conv:
-                layers.append(
-                    nn.Conv2d(out_channels, out_channels, kernel_size=3, padding='same'))
-                layers.append(norm_layer(1, out_channels))
-                layers.append(nn.ELU(inplace=True))
             in_channels = out_channels
+
+        for i, k in enumerate(kernel_sizes):
+            layers.append(
+                nn.Conv2d(out_channels, out_channels, kernel_size=3, padding='same'))
+            layers.append(norm_layer(1, out_channels))
+            layers.append(nn.ELU(inplace=True))
+
         if flatten_output:
             layers.append(nn.Flatten())
         self.net = nn.Sequential(*layers)
@@ -46,7 +48,7 @@ class Decoder(nn.Module):
         super().__init__()
         layers = []
         self.channel_step = channel_step
-        self.in_channels = 2 **(len(kernel_sizes)-1) * self.channel_step
+        self.in_channels = 2 **(len(kernel_sizes)+1) * self.channel_step
         in_channels = self.in_channels
         self.convin = nn.Linear(input_size, in_channels)
         self.return_dist = return_dist
@@ -91,8 +93,6 @@ class Decoder(nn.Module):
 
 class ViTDecoder(nn.Module):
 
-    # def __init__(self, input_size, norm_layer: nn.GroupNorm | nn.Identity, kernel_sizes=[5, 5, 5, 3, 5, 3]):
-    # def __init__(self, input_size, norm_layer: nn.GroupNorm | nn.Identity, kernel_sizes=[5, 5, 5, 5, 3]):
     def __init__(self,
                  input_size,
                  norm_layer: nn.GroupNorm | nn.Identity,

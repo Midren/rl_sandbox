@@ -125,7 +125,7 @@ class ReplayBuffer:
     ) -> RolloutChunks:
         # NOTE: constant creation of numpy arrays from self.rollout_len seems terrible for me
         s, a, r, t, is_first, additional = [], [], [], [], [], {}
-        r_indeces = np.random.choice(len(self.rollouts), batch_size, p=np.array(self.rollouts_len) / self.total_num)
+        r_indeces = np.random.choice(len(self.rollouts), batch_size)
         s_indeces = []
         for r_idx in r_indeces:
             rollout, r_len = self.rollouts[r_idx], self.rollouts_len[r_idx]
@@ -133,14 +133,12 @@ class ReplayBuffer:
             assert r_len > cluster_size - 1, "Rollout it too small"
             max_idx = r_len - cluster_size + 1
             if self.prioritize_ends:
-                s_idx = np.random.choice(max_idx - cluster_size + 1, 1).item() + cluster_size - 1
-            else:
-                s_idx = np.random.choice(max_idx, 1).item()
+                max_idx += cluster_size
+            s_idx = min(np.random.randint(max_idx), r_len - cluster_size)
             s_indeces.append(s_idx)
 
             is_first.append(torch.zeros(cluster_size))
-            if s_idx == 0:
-                is_first[-1][0] = 1
+            is_first[-1][0] = 1
 
             s.append(rollout.obs[s_idx:s_idx + cluster_size])
             a.append(rollout.actions[s_idx:s_idx + cluster_size])

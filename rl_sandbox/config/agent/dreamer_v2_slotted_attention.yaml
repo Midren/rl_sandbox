@@ -4,9 +4,9 @@ defaults:
 
 world_model:
   _target_: rl_sandbox.agents.dreamer.world_model_slots_attention.WorldModel
-  rssm_dim: 512
-  slots_num: 6
-  slots_iter_num: 2
+  rssm_dim: 1024
+  slots_num: 4
+  slots_iter_num: 3
   kl_loss_scale: 1.0
   encode_vit: false
   decode_vit: true
@@ -18,3 +18,9 @@ world_model:
   full_qk_from: 4e4
   symmetric_qk: false
   attention_block_num: 3
+
+wm_optim:
+  lr_scheduler:
+    - _target_: rl_sandbox.utils.optimizer.WarmupScheduler
+      _partial_: true
+      warmup_steps: 1e3

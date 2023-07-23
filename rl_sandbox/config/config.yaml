@@ -6,19 +6,20 @@ defaults:
   - _self_
   - override hydra/launcher: joblib
 
-seed: 42
-device_type: cuda
+seed: 43
+device_type: cuda:1
 
-agent:
-  world_model:
-    decode_vit: true
-    vit_img_size: 224
-    vit_l2_ratio: 1.0
-    kl_loss_scale: 5.0
-    kl_free_nats: 1.0
+#agent:
+#  world_model:
+#    decode_vit: true
+#    vit_img_size: 224
+#    vit_l2_ratio: 1.0
+#    kl_loss_scale: 5.0
+#    kl_loss_balancing: 0.95
+#    kl_free_nats: 1.0
 
 logger:
-  message: Dreamer with dino, kl=5
+  message: Dreamer default, 1e6, free_nats, 2048
   log_grads: false
 
 training:

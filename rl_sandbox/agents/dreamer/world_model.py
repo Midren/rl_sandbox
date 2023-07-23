@@ -135,7 +135,7 @@ class WorldModel(nn.Module):
 
         reward = self.reward_predictor(prior.combined).mode
         if self.predict_discount:
-            discount_factors = self.discount_predictor(prior.combined).sample()
+            discount_factors = self.discount_predictor(prior.combined).mode
         else:
             discount_factors = torch.ones_like(reward)
         return prior, reward, discount_factors
