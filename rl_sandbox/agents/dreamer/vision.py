@@ -6,8 +6,8 @@ class Encoder(nn.Module):
 
     def __init__(self, norm_layer: nn.GroupNorm | nn.Identity,
                     channel_step=96,
-                    kernel_sizes=[4, 4, 4],
-                    double_conv=False,
+                    kernel_sizes=[4, 4, 4, 4],
+                    post_conv_num: int = 0,
                     flatten_output=True,
                     in_channels=3,
                 ):
@@ -21,7 +21,7 @@ class Encoder(nn.Module):
             layers.append(nn.ELU(inplace=True))
             in_channels = out_channels
 
-        for i, k in enumerate(kernel_sizes):
+        for k in range(post_conv_num):
             layers.append(
                 nn.Conv2d(out_channels, out_channels, kernel_size=3, padding='same'))
             layers.append(norm_layer(1, out_channels))

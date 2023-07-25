@@ -97,9 +97,9 @@ class WorldModel(nn.Module):
             )
         else:
             self.encoder = Encoder(norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
-                                   kernel_sizes=[4, 4, 4],
-                                   channel_step=48 * (self.n_dim // 192),
-                                   double_conv=True,
+                                   kernel_sizes=[4, 4],
+                                   channel_step=48 * (self.n_dim // 192) * 2,
+                                   post_conv_num=3,
                                    flatten_output=False)
 
         self.slot_attention = SlotAttention(slots_num, self.n_dim, slots_iter_num, use_prev_slots)
@@ -107,7 +107,7 @@ class WorldModel(nn.Module):
         if self.encode_vit:
             self.positional_augmenter_inp = PositionalEmbedding(self.n_dim, (4, 4))
         else:
-            self.positional_augmenter_inp = PositionalEmbedding(self.n_dim, (6, 6))
+            self.positional_augmenter_inp = PositionalEmbedding(self.n_dim, (14, 14))
 
         self.slot_mlp = nn.Sequential(nn.Linear(self.n_dim, self.n_dim),
                                       nn.ReLU(inplace=True),
@@ -116,8 +116,8 @@ class WorldModel(nn.Module):
         if decode_vit:
             self.dino_predictor = Decoder(rssm_dim + latent_dim * latent_classes,
                                           norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
-                                          conv_kernel_sizes=[],
-                                          channel_step=self.vit_feat_dim,
+                                          conv_kernel_sizes=[3, 3],
+                                          channel_step=2*self.vit_feat_dim,
                                           kernel_sizes=self.decoder_kernels,
                                           output_channels=self.vit_feat_dim+1,
                                           return_dist=False)

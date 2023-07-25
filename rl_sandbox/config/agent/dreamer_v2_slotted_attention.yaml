@@ -4,7 +4,7 @@ defaults:
 
 world_model:
   _target_: rl_sandbox.agents.dreamer.world_model_slots_attention.WorldModel
-  rssm_dim: 1024
+  rssm_dim: 768
   slots_num: 4
   slots_iter_num: 3
   kl_loss_scale: 1.0
@@ -13,7 +13,7 @@ world_model:
   mask_combination: soft
   use_prev_slots: false
   per_slot_rec_loss: false
-  vit_l2_ratio: 0.1
+  vit_l2_ratio: 0.5
 
   full_qk_from: 4e4
   symmetric_qk: false
