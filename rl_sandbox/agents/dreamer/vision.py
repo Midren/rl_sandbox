@@ -71,15 +71,16 @@ class Decoder(nn.Module):
                                        output_padding=0))
                 layers.append(norm_layer(1, out_channels))
                 layers.append(nn.ELU(inplace=True))
-                for k in conv_kernel_sizes:
-                    layers.append(
-                        nn.Conv2d(out_channels,
-                                  out_channels,
-                                  kernel_size=k,
-                                  padding='same'))
-                    layers.append(norm_layer(1, out_channels))
-                    layers.append(nn.ELU(inplace=True))
             in_channels = out_channels
+
+        for k in conv_kernel_sizes:
+            layers.append(norm_layer(1, out_channels))
+            layers.append(nn.ELU(inplace=True))
+            layers.append(
+                nn.Conv2d(output_channels,
+                          output_channels,
+                          kernel_size=k,
+                          padding='same'))
         self.net = nn.Sequential(*layers)
 
     def forward(self, X):
