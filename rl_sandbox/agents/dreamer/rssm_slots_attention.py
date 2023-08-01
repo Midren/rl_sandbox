@@ -120,16 +120,13 @@ class RSSM(nn.Module):
 
         # Calculate stochastic state from prior embed
         # shared between all ensemble models
-        self.ensemble_prior_estimator = nn.ModuleList([
-            nn.Sequential(
+        self.ensemble_prior_estimator = nn.Sequential(
                 nn.Linear(hidden_size, hidden_size),  # Dreamer 'img_out_{k}'
                 norm_layer(hidden_size),
                 nn.ELU(inplace=True),
                 nn.Linear(hidden_size,
                           latent_dim * self.latent_classes),  # Dreamer 'img_dist_{k}'
                 View((1, -1, latent_dim, self.latent_classes)))
-            for _ in range(self.ensemble_num)
-        ])
 
         # For observation we do not have ensemble
         img_sz = embed_size
@@ -164,12 +161,7 @@ class RSSM(nn.Module):
         self.attention_scheduler.step()
 
     def estimate_stochastic_latent(self, prev_determ: torch.Tensor):
-        dists_per_model = [model(prev_determ) for model in self.ensemble_prior_estimator]
-        # NOTE: Maybe something smarter can be used instead of
-        #       taking only one random between all ensembles
-        # NOTE: in Dreamer ensemble_num is always 1
-        idx = torch.randint(0, self.ensemble_num, ())
-        return dists_per_model[0]
+        return self.ensemble_prior_estimator(prev_determ)
 
     def predict_next(self, prev_state: State, action) -> State:
         x = self.pre_determ_recurrent(
@@ -193,10 +185,11 @@ class RSSM(nn.Module):
         # Experiment, when only stochastic part is affected and deterministic is not touched
         # We keep flow of gradients through determ block, but updating it with stochastic part
         for _ in range(self.attention_block_num):
+            # FIXME: Should the the prev stochastic component also be used ?
             q, k, v = self.hidden_attention_proj(self.pre_norm(determ_post)).chunk(3, dim=-1)
             if self.symmetric_qk:
                 k = q
-            qk = torch.einsum('lbih,lbjh->lbij', q, k)
+            qk = torch.einsum('lbih,lbjh->lbij', q, k).float()
 
             attn = torch.softmax(self.att_scale * qk + self.eps, dim=-1)
             attn = attn / attn.sum(dim=-1, keepdim=True)

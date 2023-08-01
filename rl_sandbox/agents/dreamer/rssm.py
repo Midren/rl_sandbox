@@ -143,15 +143,13 @@ class RSSM(nn.Module):
 
         # Calculate stochastic state from prior embed
         # shared between all ensemble models
-        self.ensemble_prior_estimator = nn.ModuleList([
-            nn.Sequential(
+        self.ensemble_prior_estimator = nn.Sequential(
                 nn.Linear(hidden_size, hidden_size),  # Dreamer 'img_out_{k}'
                 norm_layer(hidden_size),
                 nn.ELU(inplace=True),
                 nn.Linear(hidden_size,
                           latent_dim * self.latent_classes),  # Dreamer 'img_dist_{k}'
-                View((1, -1, latent_dim, self.latent_classes))) for _ in range(self.ensemble_num)
-        ])
+                View((1, -1, latent_dim, self.latent_classes)))
 
         # For observation we do not have ensemble
         # FIXME: very bad magic number
@@ -170,12 +168,7 @@ class RSSM(nn.Module):
         self.determ_layer_norm = nn.LayerNorm(hidden_size)
 
     def estimate_stochastic_latent(self, prev_determ: torch.Tensor):
-        dists_per_model = [model(prev_determ) for model in self.ensemble_prior_estimator]
-        # NOTE: Maybe something smarter can be used instead of
-        #       taking only one random between all ensembles
-        # NOTE: in Dreamer ensemble_num is always 1
-        idx = torch.randint(0, self.ensemble_num, ())
-        return dists_per_model[0]
+        return self.ensemble_prior_estimator(prev_determ)
 
     def on_train_step(self):
         pass

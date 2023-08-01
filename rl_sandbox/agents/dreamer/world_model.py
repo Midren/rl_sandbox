@@ -69,7 +69,6 @@ class WorldModel(nn.Module):
                 Encoder(norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
                         kernel_sizes=[2],
                         channel_step=384,
-                        double_conv=False,
                         flatten_output=False,
                         in_channels=self.vit_feat_dim
                         )
@@ -81,14 +80,12 @@ class WorldModel(nn.Module):
         else:
             self.encoder = Encoder(norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
                                    kernel_sizes=[4, 4, 4, 4],
-                                   channel_step=48,
-                                   double_conv=False)
-
+                                   channel_step=48)
 
         if decode_vit:
             self.dino_predictor = Decoder(self.state_size,
                                           norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
-                                          conv_kernel_sizes=[3, 3],
+                                          conv_kernel_sizes=[3],
                                           channel_step=2*self.vit_feat_dim,
                                           kernel_sizes=self.decoder_kernels,
                                           output_channels=self.vit_feat_dim,
@@ -133,6 +130,7 @@ class WorldModel(nn.Module):
     def predict_next(self, prev_state: State, action):
         prior, _ = self.recurrent_model.predict_next(prev_state, action)
 
+        # FIXME: rewrite to utilize batch processing
         reward = self.reward_predictor(prior.combined).mode
         if self.predict_discount:
             discount_factors = self.discount_predictor(prior.combined).mode

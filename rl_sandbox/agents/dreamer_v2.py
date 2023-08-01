@@ -120,7 +120,6 @@ class DreamerV2(RlAgent):
             return ToTensor(obs.type(torch.float32).permute(order) / 255.0)
         else:
             return ((obs.type(torch.float32) / 255.0) - 0.5).permute(order)
-        # return obs.type(torch.float32).permute(order)
 
     def unprocess_obs(self, obs: torch.Tensor):
         order = list(range(len(obs.shape)))
@@ -181,17 +180,21 @@ class DreamerV2(RlAgent):
             initial_states = discovered_states.flatten().detach()
 
             states, actions, rewards, discount_factors = self.imagine_trajectory(initial_states)
+
+            rewards = rewards.float()
+            discount_factors = discount_factors.float()
+
             zs = states.combined
             rewards = self.world_model.reward_normalizer(rewards)
 
-            # Discounted factors should be shifted as they predict whether next state cannot be used
-            # First discount factor on contrary is always 1 as it cannot lead to trajectory finish
-            discount_factors = torch.cat([torch.ones_like(discount_factors[:1]), discount_factors[:-1]], dim=0).detach()
-
             vs = self.critic.lambda_return(zs, rewards[:-1], discount_factors)
 
+            # Discounted factors should be shifted as they predict whether next state cannot be used
+            # First discount factor on contrary is always 1 as it cannot lead to trajectory finish
+            discount_factors = torch.cat([torch.ones_like(discount_factors[:1]), discount_factors[:-1]], dim=0)
+
             # Ignore all factors after first is_finished state
-            discount_factors = torch.cumprod(discount_factors, dim=0)
+            discount_factors = torch.cumprod(discount_factors, dim=0).detach()
 
             losses_c, metrics_c = self.critic.calculate_loss(zs[:-1], vs, discount_factors[:-1])
 

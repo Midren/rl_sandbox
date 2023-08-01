@@ -202,7 +202,7 @@ class DistLayer(nn.Module):
                     return TruncatedNormal(loc=torch.tanh(mean).float(), scale=(2*torch.sigmoid(std/2) + min_std).float(), a=-1, b=1)
                 self.dist = get_trunc_normal
             case 'binary':
-                self.dist = lambda x: td.Bernoulli(logits=x)
+                self.dist = lambda x: td.Bernoulli(logits=x.float())
             case _:
                 raise RuntimeError("Invalid dist layer")
 

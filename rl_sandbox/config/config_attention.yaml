@@ -7,25 +7,32 @@ defaults:
   - override hydra/launcher: joblib
 
 seed: 42
-device_type: cuda:1
+device_type: cuda:0
 
 agent:
   world_model:
     encode_vit: false
-    decode_vit: false
+    decode_vit: true
     vit_img_size: 224
     vit_l2_ratio: 1.0
     slots_iter_num: 3
     slots_num: 4
-    kl_loss_scale: 2.0
-    kl_loss_balancing: 0.8
+    kl_loss_scale: 3.0
+    kl_loss_balancing: 0.6
     kl_free_nats: 1.0
 
+  actor_optim:
+    lr: 1e-4
+
+  critic_optim:
+    lr: 1e-4
+
 logger:
-  message: Attention, without dino, kl=2, removed symmetric, add warmup, 4 slots, 768, 
+  message: Attention, only dino, kl=0.6/3, 14x14, 768 rssm, no fp16, reverse dino
   log_grads: false
 
 training:
+  f16_precision: false
   checkpoint_path: null
   steps: 1e6
   val_logs_every: 2e4
@@ -37,8 +44,8 @@ validation:
     - _target_: rl_sandbox.metrics.EpisodeMetricsEvaluator
       log_video: True
       _partial_: true
-    #- _target_: rl_sandbox.metrics.SlottedDinoDreamerMetricsEvaluator
-    - _target_: rl_sandbox.metrics.SlottedDreamerMetricsEvaluator
+    - _target_: rl_sandbox.metrics.SlottedDinoDreamerMetricsEvaluator
+    #- _target_: rl_sandbox.metrics.SlottedDreamerMetricsEvaluator
       _partial_: true
     - _target_: rl_sandbox.crafter_metrics.CrafterMetricsEvaluator
       _partial_: true

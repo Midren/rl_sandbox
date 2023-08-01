@@ -66,7 +66,7 @@ class SlotAttention(nn.Module):
             slots = self.slots_norm(slots)
             q = self.slots_proj(slots)
 
-            attn = F.softmax(self.scale*torch.einsum('bik,bjk->bij', q, k), dim=1) + self.epsilon
+            attn = F.softmax(self.scale*torch.einsum('bik,bjk->bij', q, k).float(), dim=1) + self.epsilon
             attn = attn / attn.sum(dim=-1, keepdim=True)
 
             self.last_attention = attn

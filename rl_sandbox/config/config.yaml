@@ -7,14 +7,14 @@ defaults:
   - override hydra/launcher: joblib
 
 seed: 43
-device_type: cuda:0
+device_type: cuda:1
 
 agent:
   world_model:
     decode_vit: true
     vit_img_size: 224
-    vit_l2_ratio: 0.5
-    kl_loss_scale: 2.0
+    vit_l2_ratio: 1.0
+    kl_loss_scale: 3.0
     kl_loss_balancing: 0.8
     kl_free_nats: 1.0
 
@@ -25,10 +25,11 @@ agent:
     lr: 2e-4
 
 logger:
-  message: Dreamer with 0.5 dino 0.8/2, ac 2xlr, 3-3 decoder at the end
+  message: Dreamer with only dino 0.8/3, fp16
   log_grads: false
 
 training:
+  f16_precision: true
   checkpoint_path: null
   steps: 1e6
   val_logs_every: 2e4

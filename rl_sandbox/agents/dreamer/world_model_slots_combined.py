@@ -78,13 +78,6 @@ class WorldModel(nn.Module):
         if encode_vit:
             self.post_vit = nn.Sequential(
                 View((-1, self.vit_feat_dim, self.vit_size, self.vit_size)),
-                Encoder(norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
-                        kernel_sizes=[2],
-                        channel_step=384,
-                        double_conv=False,
-                        flatten_output=False,
-                        in_channels=self.vit_feat_dim
-                        )
             )
             self.encoder = nn.Sequential(
                 self.dino_vit,
@@ -92,15 +85,15 @@ class WorldModel(nn.Module):
             )
         else:
             self.encoder = Encoder(norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
-                                   kernel_sizes=[4, 4, 4],
-                                   channel_step=48,
-                                   double_conv=True,
+                                   kernel_sizes=[4, 4],
+                                   channel_step=48 * (self.n_dim // 192) * 2,
+                                   post_conv_num=2,
                                    flatten_output=False)
 
         self.slot_attention = SlotAttention(slots_num, self.n_dim, slots_iter_num, use_prev_slots)
         self.register_buffer('pos_enc', torch.from_numpy(get_position_encoding(self.slots_num, self.state_size // slots_num)).to(dtype=torch.float32))
         if self.encode_vit:
-            self.positional_augmenter_inp = PositionalEmbedding(self.n_dim, (4, 4))
+            self.positional_augmenter_inp = PositionalEmbedding(self.n_dim, (14, 14))
         else:
             self.positional_augmenter_inp = PositionalEmbedding(self.n_dim, (6, 6))
 
@@ -111,8 +104,8 @@ class WorldModel(nn.Module):
         if decode_vit:
             self.dino_predictor = Decoder(rssm_dim + latent_dim * latent_classes,
                                           norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
-                                          conv_kernel_sizes=[],
-                                          channel_step=self.vit_feat_dim,
+                                          conv_kernel_sizes=[3],
+                                          channel_step=2*self.vit_feat_dim,
                                           kernel_sizes=self.decoder_kernels,
                                           output_channels=self.vit_feat_dim+1,
                                           return_dist=False)
@@ -159,6 +152,9 @@ class WorldModel(nn.Module):
                                                    (0.229, 0.224, 0.225)),
                                               tv.transforms.Resize(self.vit_img_size, antialias=True)])
             obs = ToTensor(obs + 0.5)
+        else:
+            resize = tv.transforms.Resize(self.vit_img_size, antialias=True)
+            obs = resize(obs)
         d_features = self.dino_vit(obs).squeeze()
         return {'d_features': d_features}
 
@@ -189,7 +185,7 @@ class WorldModel(nn.Module):
 
         reward = self.reward_predictor(prior.combined).mode
         if self.predict_discount:
-            discount_factors = self.discount_predictor(prior.combined).sample()
+            discount_factors = self.discount_predictor(prior.combined).mode
         else:
             discount_factors = torch.ones_like(reward)
         return prior, reward, discount_factors
@@ -202,6 +198,11 @@ class WorldModel(nn.Module):
                 state, prev_slots = state
             else:
                 state, prev_slots = state[0], None
+        if self.encode_vit:
+            resize = tv.transforms.Resize(self.vit_img_size, antialias=True)
+            embed = self.encoder(resize(obs).unsqueeze(0))
+        else:
+            embed = self.encoder(obs.unsqueeze(0))
         embed = self.encoder(obs.unsqueeze(0))
         embed_with_pos_enc = self.positional_augmenter_inp(embed)
 
