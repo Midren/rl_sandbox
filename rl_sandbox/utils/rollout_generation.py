@@ -99,7 +99,7 @@ def collect_rollout(env: Env,
         for k, v in add.items():
             additional[k].append(v)
 
-    return Rollout(torch.stack(s), torch.stack(a).reshape(-1, 1),
+    return Rollout(torch.stack(s), torch.stack(a).reshape(len(a), -1),
                    torch.Tensor(r).float(), torch.Tensor(t), torch.Tensor(f),
                    {k: torch.stack(v)
                     for k, v in additional.items()})

@@ -67,7 +67,7 @@ class ImaginativeCritic(nn.Module):
 
     def calculate_loss(self, zs: torch.Tensor, vs: torch.Tensor,
                        discount_factors: torch.Tensor):
-        predicted_vs_dist = self.estimate_value(zs)
+        predicted_vs_dist = self.estimate_value(zs.detach())
         losses = {
             'loss_critic':
             -(predicted_vs_dist.log_prob(vs.detach()).unsqueeze(2) *

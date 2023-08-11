@@ -121,7 +121,8 @@ class Attention(nn.Module):
 
     def forward(self, x):
         B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        feat_qkv = self.qkv(x)
+        qkv = feat_qkv.reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
@@ -131,7 +132,7 @@ class Attention(nn.Module):
         x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
-        return x, attn
+        return x, (attn, feat_qkv)
 
 
 class Block(nn.Module):
@@ -316,10 +317,6 @@ class ViTFeat(nn.Module):
 
     def forward(self, img) :
         feat_out = {}
-        def hook_fn_forward_qkv(module, input, output):
-            feat_out["qkv"] = output
-
-        self.model._modules["blocks"][-1]._modules["attn"]._modules["qkv"].register_forward_hook(hook_fn_forward_qkv)
 
 
         # Forward pass in the model
@@ -327,9 +324,10 @@ class ViTFeat(nn.Module):
             h, w = img.shape[2], img.shape[3]
             feat_h, feat_w = h // self.patch_size, w // self.patch_size
             attentions = self.model.get_last_selfattention(img)
+            attentions, feat_qkv = attentions
             bs, nb_head, nb_token = attentions.shape[0], attentions.shape[1], attentions.shape[2]
             qkv = (
-                    feat_out["qkv"]
+                    feat_qkv
                     .reshape(bs, nb_token, 3, nb_head, -1)
                     .permute(2, 0, 3, 1, 4)
                 )

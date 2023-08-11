@@ -1,5 +1,7 @@
 import torch.distributions as td
 from torch import nn
+import torch
+from rl_sandbox.vision.slot_attention import PositionalEmbedding
 
 
 class Encoder(nn.Module):
@@ -23,7 +25,7 @@ class Encoder(nn.Module):
 
         for k in range(post_conv_num):
             layers.append(
-                nn.Conv2d(out_channels, out_channels, kernel_size=3, padding='same'))
+                nn.Conv2d(out_channels, out_channels, kernel_size=5, padding='same'))
             layers.append(norm_layer(1, out_channels))
             layers.append(nn.ELU(inplace=True))
 
@@ -34,6 +36,57 @@ class Encoder(nn.Module):
     def forward(self, X):
         return self.net(X)
 
+
+class SpatialBroadcastDecoder(nn.Module):
+
+    def __init__(self,
+                 input_size,
+                 norm_layer: nn.GroupNorm | nn.Identity,
+                 kernel_sizes = [3, 3, 3],
+                 out_image=(64, 64),
+                 channel_step=64,
+                 output_channels=3,
+                 return_dist=True):
+
+        super().__init__()
+        layers = []
+        self.channel_step = channel_step
+        self.in_channels = 2*self.channel_step
+        self.out_shape = out_image
+        self.positional_augmenter = PositionalEmbedding(self.in_channels, out_image)
+
+        in_channels = self.in_channels
+        self.convin = nn.Linear(input_size, in_channels)
+        self.return_dist = return_dist
+
+        for i, k in enumerate(kernel_sizes):
+            out_channels = channel_step
+            if i == len(kernel_sizes) - 1:
+                out_channels = output_channels
+                layers.append(nn.Conv2d(in_channels,
+                              out_channels,
+                              kernel_size=k,
+                              padding='same'))
+            else:
+                layers.append(nn.Conv2d(in_channels,
+                              out_channels,
+                              kernel_size=k,
+                              padding='same'))
+                layers.append(norm_layer(1, out_channels))
+                layers.append(nn.ELU(inplace=True))
+            in_channels = out_channels
+
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, X):
+        x = self.convin(X)
+        x = x.view(-1, self.in_channels, 1, 1)
+        x = torch.tile(x, self.out_shape)
+        x = self.positional_augmenter(x)
+        if self.return_dist:
+            return td.Independent(td.Normal(self.net(x), 1.0), 3)
+        else:
+            return self.net(x)
 
 class Decoder(nn.Module):
 

@@ -139,7 +139,7 @@ class RSSM(nn.Module):
                       latent_dim * self.latent_classes),  # Dreamer 'obs_dist'
             View((1, -1, latent_dim, self.latent_classes)))
 
-        self.hidden_attention_proj = nn.Linear(hidden_size, 3*hidden_size)
+        self.hidden_attention_proj = nn.Linear(hidden_size, 3*hidden_size, bias=False)
         self.pre_norm = nn.LayerNorm(hidden_size)
 
         self.fc = nn.Linear(hidden_size, hidden_size)
@@ -191,13 +191,13 @@ class RSSM(nn.Module):
                 k = q
             qk = torch.einsum('lbih,lbjh->lbij', q, k).float()
 
-            attn = torch.softmax(self.att_scale * qk + self.eps, dim=-1)
+            attn = torch.softmax(self.att_scale * qk, dim=-1) + self.eps
             attn = attn / attn.sum(dim=-1, keepdim=True)
 
             coeff = self.attention_scheduler.val
             attn = coeff * attn + (1 - coeff) * torch.eye(q.shape[-2],device=q.device)
 
-            updates = torch.einsum('lbij,lbjh->lbih', attn, v)
+            updates = torch.einsum('lbjd,lbij->lbid', v, attn)
             determ_post = determ_post + self.fc(self.fc_norm(updates))
 
         self.last_attention = attn.mean(dim=1).squeeze()

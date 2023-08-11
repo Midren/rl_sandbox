@@ -107,7 +107,7 @@ class ReplayBuffer:
                 self.add_rollout(
                     Rollout(
                         torch.stack(self.curr_rollout.obs),
-                        torch.stack(self.curr_rollout.actions).reshape(-1, 1),
+                        torch.stack(self.curr_rollout.actions).reshape(len(self.curr_rollout.actions), -1),
                         torch.Tensor(self.curr_rollout.rewards),
                         torch.Tensor(self.curr_rollout.is_finished),
                         torch.Tensor(self.curr_rollout.is_first),

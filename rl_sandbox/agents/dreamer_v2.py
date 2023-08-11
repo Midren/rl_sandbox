@@ -51,11 +51,11 @@ class DreamerV2(RlAgent):
                 raise RuntimeError('Invalid reward clipping')
         self.is_f16 = f16_precision
 
-        self.world_model: WorldModel = world_model(actions_num=actions_num).to(device_type)
+        self.world_model: WorldModel = torch.compile(world_model(actions_num=actions_num), mode='max-autotune').to(device_type)
         self.actor: ImaginativeActor = actor(latent_dim=self.world_model.state_size,
                                                   actions_num=actions_num,
                                                   is_discrete=self.is_discrete).to(device_type)
-        self.critic: ImaginativeCritic = critic(latent_dim=self.world_model.state_size).to(device_type)
+        self.critic: ImaginativeCritic = torch.compile(critic(latent_dim=self.world_model.state_size), mode='max-autotune').to(device_type)
 
         self.world_model_optimizer = wm_optim(model=self.world_model, scaler=self.is_f16)
         if self.world_model.decode_vit and self.world_model.vit_l2_ratio == 1.0:
@@ -151,7 +151,7 @@ class DreamerV2(RlAgent):
         if self.is_discrete:
             return self._last_action.argmax()
         else:
-            return self._last_action.squeeze().detach().cpu().numpy()
+            return self._last_action.squeeze().detach().cpu()
 
     def from_np(self, arr: np.ndarray):
         arr = torch.from_numpy(arr) if isinstance(arr, np.ndarray) else arr

@@ -29,17 +29,17 @@ class SlotAttention(nn.Module):
             self.slots_logsigma = nn.Parameter(torch.zeros(1, num_slots, self.n_dim))
         nn.init.xavier_uniform_(self.slots_logsigma)
 
-        self.slots_proj = nn.Linear(n_dim, n_dim)
+        self.slots_proj = nn.Linear(n_dim, n_dim, bias=False)
         self.slots_proj_2 = nn.Sequential(
-                nn.Linear(n_dim, n_dim*2),
+                nn.Linear(n_dim, n_dim*4),
                 nn.ReLU(inplace=True),
-                nn.Linear(n_dim*2, n_dim),
+                nn.Linear(n_dim*4, n_dim),
             )
         self.slots_norm = nn.LayerNorm(self.n_dim)
         self.slots_norm_2 = nn.LayerNorm(self.n_dim)
         self.slots_reccur = nn.GRUCell(input_size=self.n_dim, hidden_size=self.n_dim)
 
-        self.inputs_proj = nn.Linear(n_dim, n_dim*2)
+        self.inputs_proj = nn.Linear(n_dim, n_dim*2, bias=False)
         self.inputs_norm = nn.LayerNorm(self.n_dim)
         self.prev_slots = None
 
@@ -71,7 +71,7 @@ class SlotAttention(nn.Module):
 
             self.last_attention = attn
 
-            updates = torch.einsum('bij,bjk->bik', attn, v) / self.n_slots
+            updates = torch.einsum('bjd,bij->bid', v, attn)
             slots = self.slots_reccur(updates.reshape(-1, self.n_dim), slots_prev.reshape(-1, self.n_dim)).reshape(batch, self.n_slots, self.n_dim)
             slots = slots + self.slots_proj_2(self.slots_norm_2(slots))
         return slots
@@ -87,14 +87,18 @@ def build_grid(resolution):
 
 
 class PositionalEmbedding(nn.Module):
-    def __init__(self, n_dim: int, res: t.Tuple[int, int]):
+    def __init__(self, n_dim: int, res: t.Tuple[int, int], channel_last=False):
         super().__init__()
         self.n_dim = n_dim
         self.proj = nn.Linear(4, n_dim)
+        self.channel_last = channel_last
         self.register_buffer('grid', torch.from_numpy(build_grid(res)))
 
     def forward(self, X) -> torch.Tensor:
-        return X + self.proj(self.grid).permute(0, 3, 1, 2)
+        if self.channel_last:
+            return X + self.proj(self.grid)
+        else:
+            return X + self.proj(self.grid).permute(0, 3, 1, 2)
 
 class SlottedAutoEncoder(nn.Module):
     def __init__(self, num_slots: int, n_iter: int, dino_inp_size: int = 224):

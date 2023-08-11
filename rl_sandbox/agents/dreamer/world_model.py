@@ -8,7 +8,7 @@ from torch.nn import functional as F
 
 from rl_sandbox.agents.dreamer import Dist, Normalizer, View
 from rl_sandbox.agents.dreamer.rssm import RSSM, State
-from rl_sandbox.agents.dreamer.vision import Decoder, Encoder
+from rl_sandbox.agents.dreamer.vision import Decoder, Encoder, SpatialBroadcastDecoder
 from rl_sandbox.utils.dists import DistLayer
 from rl_sandbox.utils.fc_nn import fc_nn_generator
 from rl_sandbox.vision.dino import ViTFeat
@@ -83,13 +83,14 @@ class WorldModel(nn.Module):
                                    channel_step=48)
 
         if decode_vit:
-            self.dino_predictor = Decoder(self.state_size,
+            self.dino_predictor = SpatialBroadcastDecoder(self.state_size,
                                           norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
-                                          conv_kernel_sizes=[3],
-                                          channel_step=2*self.vit_feat_dim,
-                                          kernel_sizes=self.decoder_kernels,
+                                          out_image=(14, 14),
+                                          kernel_sizes = [5, 5, 5, 5],
+                                          channel_step=self.vit_feat_dim,
                                           output_channels=self.vit_feat_dim,
                                           return_dist=True)
+
         self.image_predictor = Decoder(self.state_size,
                                        norm_layer=nn.GroupNorm if layer_norm else nn.Identity)
 

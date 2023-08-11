@@ -1,5 +1,3 @@
-# Taken from https://raw.githubusercontent.com/toshas/torch_truncnorm/main/TruncatedNormal.py
-# Added torch modules on top
 import math
 from numbers import Number
 import typing as t
@@ -10,6 +8,7 @@ import torch.distributions as td
 from torch import nn
 from torch.distributions import Distribution, constraints
 from torch.distributions.utils import broadcast_all
+from torch.distributions.utils import _standard_normal
 
 CONST_SQRT_2 = math.sqrt(2)
 CONST_INV_SQRT_2PI = 1 / math.sqrt(2 * math.pi)
@@ -106,39 +105,28 @@ class TruncatedStandardNormal(Distribution):
         p = torch.empty(shape, device=self.a.device).uniform_(self._dtype_min_gt_0, self._dtype_max_lt_1)
         return self.icdf(p)
 
+class TruncatedNormal(td.Normal):
+    def __init__(self, loc, scale, low=-1.0, high=1.0, eps=1e-6):
+        super().__init__(loc, scale, validate_args=False)
+        self.low = low
+        self.high = high
+        self.eps = eps
 
-class TruncatedNormal(TruncatedStandardNormal):
-    """
-    Truncated Normal distribution
-    https://people.sc.fsu.edu/~jburkardt/presentations/truncated_normal.pdf
-    """
+    def _clamp(self, x):
+        clamped_x = torch.clamp(x, self.low + self.eps, self.high - self.eps)
+        x = x - x.detach() + clamped_x.detach()
+        return x
 
-    has_rsample = True
-
-    def __init__(self, loc, scale, a, b, validate_args=None):
-        self.loc, self.scale, a, b = broadcast_all(loc, scale, a, b)
-        a = (a - self.loc) / self.scale
-        b = (b - self.loc) / self.scale
-        super(TruncatedNormal, self).__init__(a, b, validate_args=validate_args)
-        self._log_scale = self.scale.log()
-        self._mean = self._mean * self.scale + self.loc
-        self._variance = self._variance * self.scale ** 2
-        self._entropy += self._log_scale
-
-    def _to_std_rv(self, value):
-        return (value - self.loc) / self.scale
-
-    def _from_std_rv(self, value):
-        return value * self.scale + self.loc
-
-    def cdf(self, value):
-        return super(TruncatedNormal, self).cdf(self._to_std_rv(value))
-
-    def icdf(self, value):
-        return self._from_std_rv(super(TruncatedNormal, self).icdf(value))
-
-    def log_prob(self, value):
-        return super(TruncatedNormal, self).log_prob(self._to_std_rv(value)) - self._log_scale
+    def sample(self, sample_shape=torch.Size(), clip=None):
+        shape = self._extended_shape(sample_shape)
+        eps = _standard_normal(shape,
+                               dtype=self.loc.dtype,
+                               device=self.loc.device)
+        eps *= self.scale
+        if clip is not None:
+            eps = torch.clamp(eps, -clip, clip)
+        x = self.loc + eps
+        return self._clamp(x)
 
 
 class Sigmoid2(nn.Module):
@@ -199,7 +187,7 @@ class DistLayer(nn.Module):
             case 'normal_trunc':
                 def get_trunc_normal(x, min_std=0.1):
                     mean, std = x.chunk(2, dim=-1)
-                    return TruncatedNormal(loc=torch.tanh(mean).float(), scale=(2*torch.sigmoid(std/2) + min_std).float(), a=-1, b=1)
+                    return TruncatedNormal(loc=torch.tanh(mean).float(), scale=(2*torch.sigmoid(std/2) + min_std).float())
                 self.dist = get_trunc_normal
             case 'binary':
                 self.dist = lambda x: td.Bernoulli(logits=x.float())
