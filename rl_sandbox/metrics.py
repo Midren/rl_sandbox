@@ -377,3 +377,67 @@ class SlottedDinoDreamerMetricsEvaluator(SlottedDreamerMetricsEvaluator):
         logger.add_scalar('val/img_reward_err', rewards_err.item(), epoch_num)
 
         logger.add_scalar(f'val/reward', real_rewards[0].sum(), epoch_num)
+
+class PostSlottedDreamerMetricsEvaluator(SlottedDreamerMetricsEvaluator):
+    def on_step(self, logger):
+        self.stored_steps += 1
+
+        if self.agent.is_discrete:
+            self._action_probs += self._action_probs
+        self._latent_probs += self.agent._state[0].stoch_dist.base_dist.probs.squeeze()
+
+    def _generate_video(self, obs: list[Observation], actions: list[Action], update_num: int):
+        # obs = torch.from_numpy(obs.copy()).to(self.agent.device)
+        # obs = self.agent.preprocess_obs(obs)
+        # actions = self.agent.from_np(actions)
+        if self.agent.is_discrete:
+            actions = F.one_hot(actions.to(torch.int64), num_classes=self.agent.actions_num).squeeze()
+        video = []
+        slots_video = []
+        rews = []
+
+        state = None
+        prev_slots = None
+        for idx, (o, a) in enumerate(list(zip(obs, actions))):
+            if idx > update_num:
+                break
+            state, prev_slots = self.agent.world_model.get_latent(o, a.unsqueeze(0).unsqueeze(0), (state, prev_slots))
+            # video_r = self.agent.world_model.image_predictor(state.combined_slots).mode
+
+            wm_state = self.agent.world_model.state_reshuffle(state.combined)
+            wm_state = wm_state.reshape(*wm_state.shape[:-1], self.agent.world_model.state_feature_num, self.agent.world_model.n_dim)
+            wm_state_pos_embedded = self.agent.world_model.positional_augmenter_inp(wm_state.unsqueeze(-3)).squeeze(-3)
+            wm_state_slots = self.agent.world_model.slot_attention(wm_state_pos_embedded.flatten(0, 1), None)
+
+            decoded_imgs, masks = self.agent.world_model.image_predictor(wm_state_slots.flatten(0, 1)).reshape(1, -1, 4, 64, 64).split([3, 1], dim=2)
+            # TODO: try the scaling of softmax as in attention
+            img_mask = self.agent.world_model.slot_mask(masks)
+            decoded_imgs = decoded_imgs * img_mask
+            video_r = torch.sum(decoded_imgs, dim=1)
+
+            rews.append(self.agent.world_model.reward_predictor(state.combined).mode.item())
+            video.append(self.agent.unprocess_obs(video_r))
+            slots_video.append(self.agent.unprocess_obs(decoded_imgs))
+
+        rews = torch.Tensor(rews).to(obs.device)
+
+        if update_num < len(obs):
+            states, _, rews_2, _ = self.agent.imagine_trajectory(state, actions[update_num+1:].unsqueeze(1), horizon=self.agent.imagination_horizon - 1 - update_num)
+            rews = torch.cat([rews, rews_2[1:].squeeze()])
+
+            wm_state = self.agent.world_model.state_reshuffle(states.combined[1:])
+            wm_state = wm_state.reshape(*wm_state.shape[:-1], self.agent.world_model.state_feature_num, self.agent.world_model.n_dim)
+            wm_state_pos_embedded = self.agent.world_model.positional_augmenter_inp(wm_state.unsqueeze(-3)).squeeze(-3)
+            wm_state_slots = self.agent.world_model.slot_attention(wm_state_pos_embedded.flatten(0, 1), None)
+
+            # video_r = self.agent.world_model.image_predictor(states.combined_slots[1:]).mode
+            decoded_imgs, masks = self.agent.world_model.image_predictor(wm_state_slots.flatten(0, 1)).reshape(-1, self.agent.world_model.slots_num, 4, 64, 64).split([3, 1], dim=2)
+            img_mask = self.agent.world_model.slot_mask(masks)
+            decoded_imgs = decoded_imgs * img_mask
+            video_r = torch.sum(decoded_imgs, dim=1)
+
+            video.append(self.agent.unprocess_obs(video_r))
+            slots_video.append(self.agent.unprocess_obs(decoded_imgs))
+
+        return torch.cat(video), rews, torch.cat(slots_video)
+
