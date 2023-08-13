@@ -19,11 +19,13 @@ class WorldModel(nn.Module):
     def __init__(self, batch_cluster_size, latent_dim, latent_classes, rssm_dim,
                  actions_num, discount_loss_scale, kl_loss_scale, kl_loss_balancing, kl_free_nats, discrete_rssm,
                  predict_discount, layer_norm: bool, encode_vit: bool, decode_vit: bool,
-                 vit_l2_ratio: float, vit_img_size: int, slots_num: int, slots_iter_num: int, mask_combination: str):
+                 vit_l2_ratio: float, vit_img_size: int, slots_num: int, slots_iter_num: int,
+                 mask_combination: str, use_reshuffle: bool, per_slot_rec_loss: bool):
         super().__init__()
         self.register_buffer('kl_free_nats', kl_free_nats * torch.ones(1))
         self.discount_scale = discount_loss_scale
         self.kl_beta = kl_loss_scale
+        self.per_slot_rec_loss = per_slot_rec_loss
 
         self.rssm_dim = rssm_dim
         self.latent_dim = latent_dim
@@ -106,9 +108,11 @@ class WorldModel(nn.Module):
         self.positional_augmenter_inp = PositionalEmbedding(self.n_dim, (1, self.state_feature_num), channel_last=True)
         # TODO: slots will assume permutation-invariance
         self.slot_attention = SlotAttention(slots_num, self.n_dim, slots_iter_num, True)
-        self.state_reshuffle = nn.Sequential(nn.Linear(self.state_size, self.state_feature_num*self.n_dim),
-                                             nn.ReLU(inplace=True),
-                                             nn.Linear(self.state_feature_num*self.n_dim, self.state_feature_num*self.n_dim))
+        self.use_reshuffle = use_reshuffle
+        if self.use_reshuffle:
+            self.state_reshuffle = nn.Sequential(nn.Linear(self.state_size, self.state_feature_num*self.n_dim),
+                                                 nn.ReLU(inplace=True),
+                                                 nn.Linear(self.state_feature_num*self.n_dim, self.state_feature_num*self.n_dim))
 
         # self.slot_mlp = nn.Sequential(nn.Linear(self.n_dim, self.n_dim),
         #                               nn.ReLU(inplace=True),
@@ -241,7 +245,11 @@ class WorldModel(nn.Module):
         posterior = State.stack(posteriors)
         prior = State.stack(priors)
 
-        state = self.state_reshuffle(posterior.combined.transpose(0, 1))
+        if self.use_reshuffle:
+            state = self.state_reshuffle(posterior.combined.transpose(0, 1))
+        else:
+            state = posterior.combined.transpose(0, 1)
+            assert state.shape[-1] % self.n_dim == 0 and self.rssm_dim % self.n_dim == 0
         state = state.reshape(*state.shape[:-1], self.state_feature_num, self.n_dim)
         state_pos_embedded = self.positional_augmenter_inp(state.unsqueeze(-3)).squeeze(-3)
 
@@ -259,8 +267,15 @@ class WorldModel(nn.Module):
             img_mask = self.slot_mask(masks)
             decoded_imgs = decoded_imgs * img_mask
 
-            x_r = td.Independent(td.Normal(torch.sum(decoded_imgs, dim=-4), 1.0), 3)
-            img_rec = -x_r.log_prob(obs).float().mean(dim=0)
+            if self.per_slot_rec_loss:
+                l2_loss = (img_mask * ((decoded_imgs - obs.unsqueeze(1))**2)).sum(dim=[2, 3, 4])
+                normalizing_factor = torch.prod(torch.tensor(obs.shape)[-3:]) / img_mask.sum(dim=[2, 3, 4]).clamp(min=1)
+                # magic constant that describes the difference between log_prob and mse losses
+                img_rec = l2_loss.mean() * normalizing_factor * 8
+                img_rec = img_rec.mean()
+            else:
+                x_r = td.Independent(td.Normal(torch.sum(decoded_imgs, dim=-4), 1.0), 3)
+                img_rec = -x_r.log_prob(obs).float().mean(dim=0)
             losses['loss_reconstruction'] = img_rec
         else:
             if self.vit_l2_ratio == 1.0:
@@ -268,10 +283,18 @@ class WorldModel(nn.Module):
                 img_mask = self.slot_mask(masks)
                 decoded_imgs_detached = decoded_imgs_detached * img_mask
 
-                x_r_detached = td.Independent(td.Normal(torch.sum(decoded_imgs_detached, dim=-4), 1.0), 3)
-
                 img_rec = torch.tensor(0, device=obs.device)
-                img_rec_detached = -x_r_detached.log_prob(obs).float().mean()
+
+                if self.per_slot_rec_loss:
+                    l2_loss = (img_mask * ((decoded_imgs_detached - obs.unsqueeze(1))**2)).sum(dim=[2, 3, 4])
+                    normalizing_factor = torch.prod(torch.tensor(obs.shape)[-3:]) / img_mask.sum(dim=[2, 3, 4]).clamp(min=1)
+                    # magic constant that describes the difference between log_prob and mse losses
+                    img_rec_detached = l2_loss.mean() * normalizing_factor * 8
+                    img_rec_detached = img_rec_detached.mean()
+                else:
+                    x_r_detached = td.Independent(td.Normal(torch.sum(decoded_imgs_detached, dim=-4), 1.0), 3)
+
+                    img_rec_detached = -x_r_detached.log_prob(obs).float().mean()
 
                 losses['loss_reconstruction_img'] = img_rec_detached
             else:
@@ -279,8 +302,15 @@ class WorldModel(nn.Module):
                 img_mask = self.slot_mask(masks)
                 decoded_imgs = decoded_imgs * img_mask
 
-                x_r = td.Independent(td.Normal(torch.sum(decoded_imgs, dim=-4), 1.0), 3)
-                img_rec = -x_r.log_prob(obs).float()
+                if self.per_slot_rec_loss:
+                    l2_loss = (img_mask * ((decoded_imgs - obs.unsqueeze(1))**2)).sum(dim=[2, 3, 4])
+                    normalizing_factor = torch.prod(torch.tensor(obs.shape)[-3:]) / img_mask.sum(dim=[2, 3, 4]).clamp(min=1)
+                    # magic constant that describes the difference between log_prob and mse losses
+                    img_rec = l2_loss.mean() * normalizing_factor * 8
+                    img_rec = img_rec.mean()
+                else:
+                    x_r = td.Independent(td.Normal(torch.sum(decoded_imgs, dim=-4), 1.0), 3)
+                    img_rec = -x_r.log_prob(obs).float().mean()
 
             decoded_feats, masks = self.dino_predictor(state_slots.flatten(0, 1)).reshape(b, -1, self.vit_feat_dim+1, self.vit_size, self.vit_size).split([self.vit_feat_dim, 1], dim=-3)
             feat_mask = self.slot_mask(masks)
@@ -289,8 +319,16 @@ class WorldModel(nn.Module):
 
             decoded_feats = decoded_feats * feat_mask
 
-            d_pred = td.Independent(td.Normal(torch.sum(decoded_feats, dim=-4), 1.0), 3)
-            d_rec = -d_pred.log_prob(d_obs).float().mean()
+            if self.per_slot_rec_loss:
+                l2_loss = (feat_mask*((decoded_feats - d_obs.unsqueeze(1))**2)).sum(dim=[2, 3, 4])
+                normalizing_factor = torch.prod(torch.tensor(d_obs.shape)[-3:]) / feat_mask.sum(dim=[2, 3, 4]).clamp(min=1)
+                # l2_loss = (feat_mask*((decoded_feats - d_obs.unsqueeze(1))**2)).sum(dim=2).max(dim=2).values.max(dim=2).values * (64*64*3)
+                # # magic constant that describes the difference between log_prob and mse losses
+                d_rec = l2_loss.mean() * normalizing_factor * 4
+                d_rec = d_rec.mean()
+            else:
+                d_pred = td.Independent(td.Normal(torch.sum(decoded_feats, dim=-4), 1.0), 3)
+                d_rec = -d_pred.log_prob(d_obs).float().mean()
 
             d_rec = d_rec / torch.prod(torch.tensor(d_obs.shape[-3:])) * torch.prod(torch.tensor(obs.shape[-3:]))
 

@@ -17,7 +17,7 @@ agent:
     slots_iter_num: 3
 
     encode_vit: false
-    decode_vit: true
+    decode_vit: false
     mask_combination: soft
     vit_l2_ratio: 1.0
 
@@ -26,6 +26,9 @@ agent:
     kl_loss_balancing: 0.8
     kl_free_nats: 1.0
 
+    use_reshuffle: true
+    per_slot_rec_loss: true
+
   wm_optim:
     lr_scheduler:
       - _target_: rl_sandbox.utils.optimizer.WarmupScheduler
@@ -33,7 +36,7 @@ agent:
         warmup_steps: 1e3
 
 logger:
-  message: Post-wm slot attention, with dino, finger spin, n_dim=256, state_feature=5, slots=5
+  message: Post-wm slot attention, per slot rec, finger spin, n_dim=256, state_feature=5, slots=5
   log_grads: false
 
 training:
