@@ -261,13 +261,6 @@ class SlottedDreamerMetricsEvaluator(DreamerMetricsEvaluator):
         logger.add_scalar(f'val/reward', real_rewards[0].sum(), epoch_num)
 
 class SlottedDinoDreamerMetricsEvaluator(SlottedDreamerMetricsEvaluator):
-    def on_step(self, logger):
-        self.stored_steps += 1
-
-        if self.agent.is_discrete:
-            self._action_probs += self._action_probs
-        self._latent_probs += self.agent._state[0].stoch_dist.base_dist.probs.squeeze()
-
     def _generate_video(self, obs: list[Observation], actions: list[Action], d_feats: list[torch.Tensor], update_num: int):
         # obs = torch.from_numpy(obs.copy()).to(self.agent.device)
         # obs = self.agent.preprocess_obs(obs)

@@ -8,7 +8,7 @@ from torch.nn import functional as F
 
 from rl_sandbox.agents.dreamer import Dist, Normalizer, View, get_position_encoding
 from rl_sandbox.agents.dreamer.rssm_slots_attention import RSSM, State
-from rl_sandbox.agents.dreamer.vision import Decoder, Encoder
+from rl_sandbox.agents.dreamer.vision import SpatialBroadcastDecoder, Decoder, Encoder
 from rl_sandbox.utils.dists import DistLayer
 from rl_sandbox.utils.fc_nn import fc_nn_generator
 from rl_sandbox.vision.dino import ViTFeat
@@ -25,7 +25,8 @@ class WorldModel(nn.Module):
                  symmetric_qk: bool = False,
                  attention_block_num: int = 3,
                  mask_combination: str = 'soft',
-                 per_slot_rec_loss: bool = False):
+                 per_slot_rec_loss: bool = False,
+                 spatial_decoder: bool = False):
         super().__init__()
         self.use_prev_slots = use_prev_slots
         self.register_buffer('kl_free_nats', kl_free_nats * torch.ones(1))
@@ -107,13 +108,23 @@ class WorldModel(nn.Module):
                                       nn.Linear(self.n_dim, self.n_dim))
 
         if decode_vit:
-            self.dino_predictor = Decoder(rssm_dim + latent_dim * latent_classes,
-                                          norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
-                                          conv_kernel_sizes=[3],
-                                          channel_step=2*self.vit_feat_dim,
-                                          kernel_sizes=self.decoder_kernels,
-                                          output_channels=self.vit_feat_dim+1,
-                                          return_dist=False)
+            if spatial_decoder:
+                self.dino_predictor = SpatialBroadcastDecoder(rssm_dim + latent_dim * latent_classes,
+                                              norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
+                                              out_image=(14, 14),
+                                              kernel_sizes = [5, 5, 5],
+                                              channel_step=self.vit_feat_dim,
+                                              output_channels=self.vit_feat_dim+1,
+                                              return_dist=False)
+            else:
+                self.dino_predictor = Decoder(rssm_dim + latent_dim * latent_classes,
+                                              norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
+                                              conv_kernel_sizes=[3],
+                                              channel_step=self.vit_feat_dim,
+                                              kernel_sizes=self.decoder_kernels,
+                                              output_channels=self.vit_feat_dim+1,
+                                              return_dist=False)
+
         self.image_predictor = Decoder(
             rssm_dim + latent_dim * latent_classes,
             norm_layer=nn.GroupNorm if layer_norm else nn.Identity,

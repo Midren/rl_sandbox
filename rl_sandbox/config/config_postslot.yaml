@@ -27,7 +27,8 @@ agent:
     kl_free_nats: 1.0
 
     use_reshuffle: true
-    per_slot_rec_loss: true
+    per_slot_rec_loss: false
+    spatial_decoder: false
 
   wm_optim:
     lr_scheduler:

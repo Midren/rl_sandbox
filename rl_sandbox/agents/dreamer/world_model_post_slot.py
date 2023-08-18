@@ -21,7 +21,7 @@ class WorldModel(nn.Module):
                  actions_num, discount_loss_scale, kl_loss_scale, kl_loss_balancing, kl_free_nats, discrete_rssm,
                  predict_discount, layer_norm: bool, encode_vit: bool, decode_vit: bool,
                  vit_l2_ratio: float, vit_img_size: int, slots_num: int, slots_iter_num: int,
-                 mask_combination: str, use_reshuffle: bool, per_slot_rec_loss: bool):
+                 mask_combination: str, use_reshuffle: bool, per_slot_rec_loss: bool, spatial_decoder: bool):
         super().__init__()
         self.register_buffer('kl_free_nats', kl_free_nats * torch.ones(1))
         self.discount_scale = discount_loss_scale
@@ -88,20 +88,22 @@ class WorldModel(nn.Module):
         self.n_dim = 256
 
         if decode_vit:
-            # self.dino_predictor = SpatialBroadcastDecoder(self.n_dim,
-            #                               norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
-            #                               out_image=(14, 14),
-            #                               kernel_sizes = [5, 5, 5],
-            #                               channel_step=self.vit_feat_dim,
-            #                               output_channels=self.vit_feat_dim+1,
-            #                               return_dist=False)
-            self.dino_predictor = Decoder(self.n_dim,
-                                          norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
-                                          conv_kernel_sizes=[3],
-                                          channel_step=self.vit_feat_dim,
-                                          kernel_sizes=self.decoder_kernels,
-                                          output_channels=self.vit_feat_dim+1,
-                                          return_dist=False)
+            if spatial_decoder:
+                self.dino_predictor = SpatialBroadcastDecoder(self.n_dim,
+                                              norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
+                                              out_image=(14, 14),
+                                              kernel_sizes = [5, 5, 5],
+                                              channel_step=self.vit_feat_dim,
+                                              output_channels=self.vit_feat_dim+1,
+                                              return_dist=False)
+            else:
+                self.dino_predictor = Decoder(self.n_dim,
+                                              norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
+                                              conv_kernel_sizes=[3],
+                                              channel_step=self.vit_feat_dim,
+                                              kernel_sizes=self.decoder_kernels,
+                                              output_channels=self.vit_feat_dim+1,
+                                              return_dist=False)
 
         self.slots_num = slots_num
         self.mask_combination = mask_combination

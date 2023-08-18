@@ -19,6 +19,8 @@ world_model:
   symmetric_qk: false
   attention_block_num: 3
 
+  spatial_decoder: false
+
 wm_optim:
   lr_scheduler:
     - _target_: rl_sandbox.utils.optimizer.WarmupScheduler
