@@ -58,8 +58,8 @@ class DreamerV2(RlAgent):
         self.critic: ImaginativeCritic = torch.compile(critic(latent_dim=self.world_model.state_size), mode='max-autotune').to(device_type)
 
         self.world_model_optimizer = wm_optim(model=self.world_model, scaler=self.is_f16)
-        if self.world_model.decode_vit and self.world_model.vit_l2_ratio == 1.0:
-            self.image_predictor_optimizer = wm_optim(model=self.world_model.image_predictor, scaler=self.is_f16)
+        # if self.world_model.decode_vit and self.world_model.vit_l2_ratio == 1.0:
+        #     self.image_predictor_optimizer = wm_optim(model=self.world_model.image_predictor, scaler=self.is_f16)
         self.actor_optimizer = actor_optim(model=self.actor)
         self.critic_optimizer = critic_optim(model=self.critic)
 
@@ -170,8 +170,8 @@ class DreamerV2(RlAgent):
             # FIXME: wholely remove discrete RSSM
             # self.world_model.recurrent_model.discretizer_scheduler.step()
 
-        if self.world_model.decode_vit and self.world_model.vit_l2_ratio == 1.0:
-            self.image_predictor_optimizer.step(losses_wm['loss_reconstruction_img'])
+        # if self.world_model.decode_vit and self.world_model.vit_l2_ratio == 1.0:
+        #     self.image_predictor_optimizer.step(losses_wm['loss_reconstruction_img'])
 
 
         metrics_wm |= self.world_model_optimizer.step(losses_wm['loss_wm'])

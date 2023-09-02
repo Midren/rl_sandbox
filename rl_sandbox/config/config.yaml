@@ -1,31 +1,35 @@
 defaults:
-  - agent: dreamer_v2_crafter
-  - env: crafter
-  - training: crafter
+  - agent: dreamer_v2
+  - env: dm_cartpole
+  - training: dm
   - logger: wandb
   - _self_
   - override hydra/launcher: joblib
 
-seed: 43
-device_type: cuda:1
+seed: 42
+device_type: cuda
 
 agent:
   world_model:
-    decode_vit: true
-    vit_img_size: 224
-    vit_l2_ratio: 1.0
-    kl_loss_scale: 3.0
-    kl_loss_balancing: 0.8
-    kl_free_nats: 1.0
+    _target_: rl_sandbox.agents.dreamer.world_model.WorldModel
+    rssm_dim: 200
 
-  actor_optim:
-    lr: 2e-4
+    encode_vit: false
+    decode_vit: false
+    #vit_l2_ratio: 1.0
 
-  critic_optim:
-    lr: 2e-4
+    #kl_loss_scale: 2.0
+    #kl_loss_balancing: 0.8
+    #kl_free_nats: 1.0
+
+  #wm_optim:
+  #  lr_scheduler:
+  #    - _target_: rl_sandbox.utils.optimizer.WarmupScheduler
+  #      _partial_: true
+  #      warmup_steps: 1e3
 
 logger:
-  message: Dreamer with only dino 0.8/3, fp16
+  message: Default dreamer fp16
   log_grads: false
 
 training:
@@ -43,21 +47,20 @@ validation:
       _partial_: true
     - _target_: rl_sandbox.metrics.DreamerMetricsEvaluator
       _partial_: true
-    - _target_: rl_sandbox.crafter_metrics.CrafterMetricsEvaluator
-      _partial_: true
+    #- _target_: rl_sandbox.metrics.PostSlottedDreamerMetricsEvaluator
+    #  _partial_: true
+    #- _target_: rl_sandbox.crafter_metrics.CrafterMetricsEvaluator
+    #  _partial_: true
 
 debug:
   profiler: false
 
 hydra:
-  #mode: MULTIRUN
-  mode: RUN
+  mode: MULTIRUN
+  #mode: RUN
   launcher:
-    n_jobs: 1
-  #sweeper:
-  #  params:
-  #    agent.world_model._target_: rl_sandbox.agents.dreamer.world_model_slots_combined.WorldModel,rl_sandbox.agents.dreamer.world_model_slots_attention.WorldModel
-  #    agent.world_model.vit_l2_ratio: 0.1,0.5
-  #    agent.world_model.kl_loss_scale: 1e1,1e2,1e3,1e4
-  #    agent.world_model.vit_l2_ratio: 0.1,0.9
-
+    n_jobs: 3
+  sweeper:
+    params:
+      seed: 17,42,45
+      env: dm_finger_spin,dm_finger_turn_hard

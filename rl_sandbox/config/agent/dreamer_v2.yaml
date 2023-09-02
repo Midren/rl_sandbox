@@ -13,7 +13,7 @@ world_model:
   latent_classes: 32
   rssm_dim: 200
   discount_loss_scale: 1.0
-  kl_loss_scale: 1
+  kl_loss_scale: 2
   kl_loss_balancing: 0.8
   kl_free_nats: 1.00
   discrete_rssm: false
@@ -30,7 +30,7 @@ actor:
   # mixing of reinforce and maximizing value func
   # for dm_control it is zero in Dreamer (Atari 1)
   reinforce_fraction: null
-  entropy_scale: 1e-4
+  entropy_scale: 1e-5
   layer_norm: ${..layer_norm}
 
 critic:

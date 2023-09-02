@@ -121,10 +121,11 @@ class WorldModel(nn.Module):
         #                               nn.ReLU(inplace=True),
         #                               nn.Linear(self.n_dim, self.n_dim))
 
-        self.image_predictor = Decoder(self.n_dim,
-                                       output_channels=4,
-                                       norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
-                                       return_dist=False)
+        if not decode_vit:
+            self.image_predictor = Decoder(self.n_dim,
+                                           output_channels=4,
+                                           norm_layer=nn.GroupNorm if layer_norm else nn.Identity,
+                                           return_dist=False)
 
         self.reward_predictor = fc_nn_generator(self.state_size,
                                                 1,
@@ -283,24 +284,25 @@ class WorldModel(nn.Module):
             losses['loss_reconstruction'] = img_rec
         else:
             if self.vit_l2_ratio == 1.0:
-                decoded_imgs_detached, masks = self.image_predictor(state_slots.flatten(0, 1).detach()).reshape(b, -1, 4, h, w).split([3, 1], dim=-3)
-                img_mask = self.slot_mask(masks)
+                pass
+                # decoded_imgs_detached, masks = self.image_predictor(state_slots.flatten(0, 1).detach()).reshape(b, -1, 4, h, w).split([3, 1], dim=-3)
+                # img_mask = self.slot_mask(masks)
 
                 img_rec = torch.tensor(0, device=obs.device)
 
-                if self.per_slot_rec_loss:
-                    l2_loss = (img_mask * ((decoded_imgs_detached - obs.unsqueeze(1))**2)).sum(dim=[2, 3, 4])
-                    normalizing_factor = torch.prod(torch.tensor(obs.shape)[-3:]) / img_mask.sum(dim=[2, 3, 4]).clamp(min=1) / 3
-                    img_rec_detached = l2_loss * normalizing_factor + torch.prod(torch.tensor(obs.shape)[-3:]) * math.log((2*math.pi)**(1/2))
-                    img_rec_detached = img_rec_detached.mean()
-                    decoded_imgs_detached = decoded_imgs_detached * img_mask
-                else:
-                    decoded_imgs_detached = decoded_imgs_detached * img_mask
-                    x_r_detached = td.Independent(td.Normal(torch.sum(decoded_imgs_detached, dim=-4), 1.0), 3)
+                # if self.per_slot_rec_loss:
+                #     l2_loss = (img_mask * ((decoded_imgs_detached - obs.unsqueeze(1))**2)).sum(dim=[2, 3, 4])
+                #     normalizing_factor = torch.prod(torch.tensor(obs.shape)[-3:]) / img_mask.sum(dim=[2, 3, 4]).clamp(min=1) / 3
+                #     img_rec_detached = l2_loss * normalizing_factor + torch.prod(torch.tensor(obs.shape)[-3:]) * math.log((2*math.pi)**(1/2))
+                #     img_rec_detached = img_rec_detached.mean()
+                #     decoded_imgs_detached = decoded_imgs_detached * img_mask
+                # else:
+                #     decoded_imgs_detached = decoded_imgs_detached * img_mask
+                #     x_r_detached = td.Independent(td.Normal(torch.sum(decoded_imgs_detached, dim=-4), 1.0), 3)
 
-                    img_rec_detached = -x_r_detached.log_prob(obs).float().mean()
+                #     img_rec_detached = -x_r_detached.log_prob(obs).float().mean()
 
-                losses['loss_reconstruction_img'] = img_rec_detached
+                # losses['loss_reconstruction_img'] = img_rec_detached
             else:
                 decoded_imgs, masks = self.image_predictor(state_slots.flatten(0, 1)).reshape(b, -1, 4, h, w).split([3, 1], dim=-3)
                 img_mask = self.slot_mask(masks)

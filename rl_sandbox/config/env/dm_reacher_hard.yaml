@@ -1,8 +1,8 @@
 _target_: rl_sandbox.utils.env.DmEnv
-domain_name: quadruped
-task_name: run
+domain_name: reacher
+task_name: hard
 run_on_pixels: true
 obs_res: [64, 64]
-camera_id: 2
+camera_id: 0
 repeat_action_num: 2
 transforms: []

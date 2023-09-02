@@ -17,7 +17,7 @@ agent:
     slots_iter_num: 3
 
     encode_vit: false
-    decode_vit: false
+    decode_vit: true
     mask_combination: soft
     vit_l2_ratio: 1.0
 
@@ -37,7 +37,7 @@ agent:
         warmup_steps: 1e3
 
 logger:
-  message: Post-wm slot attention, n_dim=256
+  message: Post-wm dino slot attention, n_dim=256
   log_grads: false
 
 training:
@@ -53,15 +53,15 @@ validation:
     - _target_: rl_sandbox.metrics.EpisodeMetricsEvaluator
       log_video: True
       _partial_: true
-    - _target_: rl_sandbox.metrics.PostSlottedDreamerMetricsEvaluator
+    - _target_: rl_sandbox.metrics.PostSlottedDinoDreamerMetricsEvaluator
       _partial_: true
 
 debug:
   profiler: false
 
 hydra:
-  mode: MULTIRUN
-  #mode: RUN
+  #mode: MULTIRUN
+  mode: RUN
   launcher:
     n_jobs: 3
   sweeper:

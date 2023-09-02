@@ -1,7 +1,7 @@
 import random
 import os
 os.environ['MUJOCO_GL'] = 'egl'
-# os.environ["WANDB_MODE"]="offline"
+os.environ["WANDB_MODE"]="offline"
 
 import crafter
 import hydra
@@ -76,7 +76,8 @@ def main(cfg: DictConfig):
         f16_precision=cfg.training.f16_precision,
         logger=logger)
 
-    buff = ReplayBuffer(prioritize_ends=cfg.training.prioritize_ends,
+    buff = ReplayBuffer(max_len=500_000,
+                        prioritize_ends=cfg.training.prioritize_ends,
                         min_ep_len=cfg.agent.get('batch_cluster_size', 1) *
                         (cfg.training.prioritize_ends + 1),
                         preprocess_func=agent.preprocess,

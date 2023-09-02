@@ -440,3 +440,79 @@ class PostSlottedDreamerMetricsEvaluator(SlottedDreamerMetricsEvaluator):
 
         return torch.cat(video), rews, torch.cat(slots_video)
 
+
+class PostSlottedDinoDreamerMetricsEvaluator(SlottedDreamerMetricsEvaluator):
+    def on_step(self, logger):
+        self.stored_steps += 1
+
+        if self.agent.is_discrete:
+            self._action_probs += self._action_probs
+        self._latent_probs += self.agent._state[0].stoch_dist.base_dist.probs.squeeze()
+
+    def _generate_video(self, obs: list[Observation], actions: list[Action], update_num: int):
+        # obs = torch.from_numpy(obs.copy()).to(self.agent.device)
+        # obs = self.agent.preprocess_obs(obs)
+        # actions = self.agent.from_np(actions)
+        if self.agent.is_discrete:
+            actions = F.one_hot(actions.to(torch.int64), num_classes=self.agent.actions_num).squeeze()
+        video = []
+        slots_video = []
+        rews = []
+
+        vit_size = self.agent.world_model.vit_size
+
+        state = None
+        prev_slots = None
+        for idx, (o, a) in enumerate(list(zip(obs, actions))):
+            if idx > update_num:
+                break
+            state, prev_slots = self.agent.world_model.get_latent(o, a.unsqueeze(0).unsqueeze(0), (state, prev_slots))
+            # video_r = self.agent.world_model.image_predictor(state.combined_slots).mode
+
+            wm_state = self.agent.world_model.state_reshuffle(state.combined)
+            wm_state = wm_state.reshape(*wm_state.shape[:-1], self.agent.world_model.state_feature_num, self.agent.world_model.n_dim)
+            wm_state_pos_embedded = self.agent.world_model.positional_augmenter_inp(wm_state.unsqueeze(-3)).squeeze(-3)
+            wm_state_slots = self.agent.world_model.slot_attention(wm_state_pos_embedded.flatten(0, 1), None)
+
+            # decoded_imgs, masks = self.agent.world_model.image_predictor(wm_state_slots.flatten(0, 1)).reshape(1, -1, 4, 64, 64).split([3, 1], dim=2)
+            # TODO: try the scaling of softmax as in attention
+            # img_mask = self.agent.world_model.slot_mask(masks)
+            # decoded_imgs = decoded_imgs * img_mask
+            # video_r = torch.sum(decoded_imgs, dim=1)
+
+            decoded_dino_feats, vit_masks = self.agent.world_model.dino_predictor(wm_state_slots.flatten(0, 1)).reshape(-1, self.agent.world_model.slots_num, self.agent.world_model.vit_feat_dim+1, vit_size, vit_size).split([self.agent.world_model.vit_feat_dim, 1], dim=2)
+            vit_mask = self.agent.world_model.slot_mask(vit_masks)
+            decoded_dino_feats = decoded_dino_feats * vit_mask
+            decoded_dino = (decoded_dino_feats).sum(dim=1)
+            upscale = tv.transforms.Resize(64, antialias=True)
+
+            upscaled_mask = upscale(vit_mask.permute(0, 1, 4, 2, 3).squeeze())
+            per_slot_vit = (upscaled_mask.unsqueeze(1) * o.to(self.agent.device).unsqueeze(0)).unsqueeze(0)
+
+            rews.append(self.agent.world_model.reward_predictor(state.combined).mode.item())
+            video.append(self.agent.unprocess_obs(o).unsqueeze(0))
+            slots_video.append(self.agent.unprocess_obs(per_slot_vit))
+
+        rews = torch.Tensor(rews).to(obs.device)
+
+        if update_num < len(obs):
+            states, _, rews_2, _ = self.agent.imagine_trajectory(state, actions[update_num+1:].unsqueeze(1), horizon=self.agent.imagination_horizon - 1 - update_num)
+            rews = torch.cat([rews, rews_2[1:].squeeze()])
+
+            wm_state = self.agent.world_model.state_reshuffle(states.combined[1:])
+            wm_state = wm_state.reshape(*wm_state.shape[:-1], self.agent.world_model.state_feature_num, self.agent.world_model.n_dim)
+            wm_state_pos_embedded = self.agent.world_model.positional_augmenter_inp(wm_state.unsqueeze(-3)).squeeze(-3)
+            wm_state_slots = self.agent.world_model.slot_attention(wm_state_pos_embedded.flatten(0, 1), None)
+
+            decoded_dino_feats, vit_masks = self.agent.world_model.dino_predictor(wm_state_slots.flatten(0, 1)).reshape(-1, self.agent.world_model.slots_num, self.agent.world_model.vit_feat_dim+1, vit_size, vit_size).split([self.agent.world_model.vit_feat_dim, 1], dim=2)
+            vit_mask = F.softmax(vit_masks, dim=1)
+            decoded_dino = (decoded_dino_feats * vit_mask).sum(dim=1)
+
+            upscale = tv.transforms.Resize(64, antialias=True)
+            upscaled_mask = upscale(vit_mask.permute(0, 1, 4, 2, 3).squeeze())
+            per_slot_vit = (upscaled_mask.unsqueeze(2) * obs[update_num+1:].to(self.agent.device).unsqueeze(1))
+
+            video.append(self.agent.unprocess_obs(obs[update_num+1:]))
+            slots_video.append(self.agent.unprocess_obs(per_slot_vit))
+
+        return torch.cat(video), rews, torch.cat(slots_video)
